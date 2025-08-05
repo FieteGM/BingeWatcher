@@ -41,29 +41,6 @@ def load_progress():
                 print("[!] Corrupt progress DB:", e)
     return {}
 
-def select_progress_ui():
-    db = load_progress()
-    inject_sidebar(driver, db)
-    selected = get_selected_series_cookie(driver)
-    if not db:
-        print("[!] No saved progress found.")
-        return None, None, None, None
-    print("\n==== Saved Series ====")
-    for i, (series, data) in enumerate(db.items()):
-        print(f"{i+1}: {series} S{data['season']}E{data['episode']} @ {data['position']}s")
-    print("0: Start new series")
-    while True:
-        sel = input("Select number: ")
-        if sel.isdigit():
-            sel = int(sel)
-            if sel == 0:
-                return None, None, None, None
-            elif 1 <= sel <= len(db):
-                series = list(db.keys())[sel-1]
-                data = db[series]
-                return series, data['season'], data['episode'], data['position']
-        print("Invalid selection.")
-
 # === BROWSER SETUP ===
 def start_browser():
     profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
@@ -75,6 +52,7 @@ def start_browser():
     options.profile = profile_path
     driver = webdriver.Firefox(service=service, options=options)
     return driver
+
 
 # === UTILITY FUNCTIONS ===
 def exit_fullscreen(driver):
@@ -120,10 +98,11 @@ def parse_episode_info(url):
         return match.group(1), int(match.group(2)), int(match.group(3))
     return None, None, None
 
-def navigate_to_episode(driver, series, season, episode):
+def navigate_to_episode(driver, series, season, episode, db):
     next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
     driver.get(next_url)
     WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
+    inject_sidebar(driver, db)
 
 def skip_intro(driver, seconds):
     WebDriverWait(driver, 15).until(lambda d: d.execute_script("return document.querySelector('video')?.readyState > 0;"))
@@ -133,10 +112,15 @@ def get_current_position(driver):
     return driver.execute_script("return document.querySelector('video').currentTime || 0;")
 
 def play_episodes_loop(driver, series, season, episode, position=0):
+    db = load_progress()
     current_episode = episode
+
     while True:
         print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
 
+        navigate_to_episode(driver, series, season, current_episode, db)
+        inject_sidebar(driver, db)
+        
         if not switch_to_video_frame(driver):
             break
 
@@ -163,6 +147,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         current_episode += 1
         exit_fullscreen(driver)
         time.sleep(1)
+        db = load_progress() 
 
         try:
             navigate_to_episode(driver, series, season, current_episode)
@@ -172,16 +157,21 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         time.sleep(2)
 
 def inject_sidebar(driver, db):
-    # Bereite das HTML für die Sidebar vor
+    # 1. Baue Einträge
     entries = []
     for series, data in db.items():
-        # JS wird onclick="window.selectSeries('...')" nutzen
-        entries.append(f'<li onclick="window.selectSeries(\'{series}\')">{series} S{data["season"]}E{data["episode"]} @ {data["position"]}s</li>')
-    sidebar_html = """
+        entries.append(
+            f'<li onclick="window.selectSeries(\'{series}\')" style="user-select:none">'
+            f'{series} S{data["season"]}E{data["episode"]} @ {data["position"]}s'
+            '</li>'
+        )
+
+    # 2. Sidebar-HTML
+    safe_sidebar_html = """
     <style>
         #bingeSidebar {position:fixed;top:0;left:0;width:250px;height:100vh;background:#222;color:#eee;z-index:999999;padding:10px 0;box-shadow:2px 0 12px #0006;}
         #bingeSidebar h2 {text-align:center;font-size:1.2em;margin-bottom:10px;}
-        #bingeSidebar ul {list-style:none;padding:0;}
+        #bingeSidebar ul {list-style:none;padding:0;margin:0;}
         #bingeSidebar li {padding:7px 20px;cursor:pointer;border-bottom:1px solid #333;}
         #bingeSidebar li:hover {background:#444;}
         #bingeSidebar .closeBtn {position:absolute;right:10px;top:8px;cursor:pointer;}
@@ -193,62 +183,70 @@ def inject_sidebar(driver, db):
             %s
         </ul>
     </div>
-    <script>
+    """ % "\n".join(entries)
+
+    # 3. Entferne alte Sidebar
+    remove_sidebar_js = """
+    var el = document.getElementById('bingeSidebar');
+    if (el) el.remove();
+    """
+    driver.execute_script(remove_sidebar_js)
+
+    # 4. Füge Sidebar HTML ein (ohne script!)
+    js_html = f"""
+    if (!document.fullscreenElement) {{
+        var sidebarDiv = document.createElement('div');
+        sidebarDiv.innerHTML = `{safe_sidebar_html}`;
+        document.body.appendChild(sidebarDiv.firstElementChild);
+    }}
+    """
+    driver.execute_script(js_html)
+
+    # 5. Injecte Handler-Funktion (NACH dem Einfügen!)
+    sidebar_js = """
     window.selectSeries = function(seriesName) {
         document.cookie = "bw_series=" + encodeURIComponent(seriesName) + "; path=/";
         location.reload();
     }
-    </script>
-    """ % "\n".join(entries)
-    # Sidebar nur anzeigen, wenn NICHT im Fullscreen
-    js = """
-    if (!document.fullscreenElement) {
-        if (!document.getElementById('bingeSidebar')) {
-            var d = document.createElement('div');
-            d.innerHTML = `%s`;
-            document.body.appendChild(d.firstElementChild);
-        }
-    }
-    """ % sidebar_html.replace("`", "\\`")
-    driver.execute_script(js)
+    """
+    driver.execute_script('document.body.innerHTML += `<div id="sidebar_debug" style="position:fixed;top:80px;left:0;z-index:999999;background:#0f0;color:#000;padding:16px;font-size:24px;">SIDEBAR-Debug</div>`;')
 
 def get_selected_series_cookie(driver):
-    cookies = driver.get_cookies()
-    for cookie in cookies:
+    for cookie in driver.get_cookies():
         if cookie['name'] == 'bw_series':
             return cookie['value']
     return None
 
+def delete_series_cookie(driver):
+    driver.delete_cookie('bw_series')
+
 # === MAIN EXECUTION ===
 def main():
-    series, season, episode, position = select_progress_ui()
     driver = start_browser()
+    db = load_progress()
+    driver.get(START_URL)
+    inject_sidebar(driver, db)
 
-    try:
-        if series:
-            print(f"[✓] Resuming {series} S{season}E{episode} at {position}s.")
-            navigate_to_episode(driver, series, season, episode)
-            play_episodes_loop(driver, series, season, episode, position)
-            return
+    # Inject Sidebar (UI) IMMER wenn nicht Fullscreen!
+    inject_sidebar(driver, db)
+    time.sleep(1)
 
-        driver.get(START_URL)
-        input("[>] Select provider, start playback, then press ENTER...")
-        series, season, episode = parse_episode_info(driver.current_url)
-        if not series:
-            print("[!] Could not identify series details. Exiting.")
-            return
-        play_episodes_loop(driver, series, season, episode)
+    selected = get_selected_series_cookie(driver)
+    if selected and selected in db:
+        data = db[selected]
+        print(f"[✓] User selected: {selected} S{data['season']}E{data['episode']} @ {data['position']}s")
+        delete_series_cookie(driver)
+        navigate_to_episode(driver, selected, data['season'], data['episode'])
+        play_episodes_loop(driver, selected, data['season'], data['episode'], data['position'])
+        return
 
-    except KeyboardInterrupt:
-        if series:
-            current_pos = get_current_position(driver)
-            save_progress(series, season, episode, int(current_pos))
-            print("\n[!] Interrupted by user, progress saved.")
-    except Exception as e:
-        print(f"[!] Critical error: {e}")
-    finally:
-        driver.quit()
-        print("[✓] Browser closed.")
+    # Wenn kein gespeicherter Fortschritt ausgewählt, neues starten:
+    input("[>] Select provider, start playback, then press ENTER...")
+    series, season, episode = parse_episode_info(driver.current_url)
+    if not series:
+        print("[!] Could not identify series details. Exiting.")
+        return
+    play_episodes_loop(driver, series, season, episode)
 
 if __name__ == "__main__":
     main()

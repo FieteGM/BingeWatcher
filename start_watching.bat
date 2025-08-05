@@ -4,29 +4,44 @@ setlocal enabledelayedexpansion
 REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
 echo Starting Binge Watching...
+echo Initializing Tor...
 
 REM === Start Tor process (hidden window) ===
 set TOR_PATH=%~dp0SerienJunkie\Browser\TorBrowser\Tor\tor.exe
+
+REM Check if Tor is already running (Port 9050 in use)
 netstat -an | find "9050" >nul
-echo [>] Starting Tor...
 if %ERRORLEVEL% EQU 0 (
-    echo [?] Tor seems to be running already.
-) else (
-    start "" /b "%TOR_PATH%" >nul 2>&1
-    REM Wait until port 9050 is actually open (max. 30 seconds)
+    echo [?] Tor seems to be running already. Trying to Kill and restart the process...
+    taskkill /IM tor.exe /F >nul 2>&1
+    REM Wait until port 9050 is truly free
     set /a waitcount=0
-    :torwait
+    :waittorclose
     timeout /t 1 >nul
     netstat -an | find "9050" >nul
-    if %ERRORLEVEL% NEQ 0 (
+    if %ERRORLEVEL% EQU 0 (
         set /a waitcount+=1
-        if !waitcount! LSS 30 goto torwait
-        echo [X] Tor-Port 9050 wurde nicht geöffnet!
+        if !waitcount! LSS 55 goto waittorclose
+        echo [X] Port 9050 did not become available after kill. Aborted execution.
         pause
         exit /b 1
     )
+)
 
-    echo [>] Tor started...
+REM Start goal now
+start "" /b "%TOR_PATH%" >nul 2>&1
+
+REM Wait until port 9050 is open (Tor has started)
+set /a waitcount=0
+:waittorstart
+timeout /t 1 >nul
+netstat -an | find "9050" >nul
+if %ERRORLEVEL% NEQ 0 (
+    set /a waitcount+=1
+    if !waitcount! LSS 30 goto waittorstart
+    echo [X] port 9050 was not opened!
+    pause
+    exit /b 1
 )
 
 REM === Required Python modules ===
@@ -64,7 +79,6 @@ if not "!missing_modules!"=="" (
     )
 ) else (
     echo [=] All dependencies satisfied.
-    echo [>] Startig Stream...
 )
 
 REM === Start Python Script ===
