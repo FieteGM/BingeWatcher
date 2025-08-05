@@ -2,8 +2,32 @@
 setlocal enabledelayedexpansion
 
 REM === Navigate to the script directory ===
-cd /d "%~dp0Onepiece"
-echo Starting s.toBot...
+cd /d "%~dp0SerienJunkie"
+echo Starting Binge Watching...
+
+REM === Start Tor process (hidden window) ===
+set TOR_PATH=%~dp0SerienJunkie\Browser\TorBrowser\Tor\tor.exe
+netstat -an | find "9050" >nul
+echo [>] Starting Tor...
+if %ERRORLEVEL% EQU 0 (
+    echo [?] Tor seems to be running already.
+) else (
+    start "" /b "%TOR_PATH%" >nul 2>&1
+    REM Wait until port 9050 is actually open (max. 30 seconds)
+    set /a waitcount=0
+    :torwait
+    timeout /t 1 >nul
+    netstat -an | find "9050" >nul
+    if %ERRORLEVEL% NEQ 0 (
+        set /a waitcount+=1
+        if !waitcount! LSS 30 goto torwait
+        echo [X] Tor-Port 9050 wurde nicht geöffnet!
+        pause
+        exit /b 1
+    )
+
+    echo [>] Tor started...
+)
 
 REM === Required Python modules ===
 set modules=selenium configparser
@@ -11,7 +35,7 @@ set modules=selenium configparser
 REM === Check Python installation ===
 python --version >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Python is not installed or not added to PATH.
+    echo [X] Python is not installed or not added to PATH.
     pause
     exit /b 1
 )
@@ -34,16 +58,21 @@ if not "!missing_modules!"=="" (
     python -m pip install --upgrade pip >nul 2>&1
     python -m pip install !missing_modules!
     if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] Failed to install modules. Please install manually.
+        echo [X] Failed to install modules. Please install manually.
         pause
         exit /b 1
     )
 ) else (
-    echo [✓] All dependencies satisfied.
+    echo [=] All dependencies satisfied.
+    echo [>] Startig Stream...
 )
 
 REM === Start Python Script ===
 python s.toBot.py
 
 pause
+
+REM === Kill Tor process (optional) ===
+taskkill /IM tor.exe /F >nul 2>&1
+
 endlocal
