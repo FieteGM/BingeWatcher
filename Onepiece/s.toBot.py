@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import re
 from selenium import webdriver
@@ -10,170 +9,174 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# === KONFIGURATION ===
-
-PROFILE_PATH = r'C:\Users\Ulrike N5\AppData\Roaming\Mozilla\Firefox\Profiles\t4rbj1mq.onepiece'
+# === CONFIGURATION ===
 HEADLESS = False
 START_URL = 'https://s.to/serie/stream/one-piece/staffel-1/episode-1'
-
 INTRO_SKIP_SECONDS = 320
 
-# automatisch im gleichen Ordner wie dieses Skript
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, 'geckodriver.exe')
+UBLOCK_ORIGIN_PATH = os.path.join(SCRIPT_DIR, 'ublock_origin.xpi')
 
-# === FUNKTIONEN ===
-
-def starte_browser():
+# === BROWSER SETUP ===
+def start_browser():
     options = webdriver.FirefoxOptions()
     if HEADLESS:
         options.add_argument("--headless")
-    # Profil laden
-    options.profile = webdriver.FirefoxProfile(PROFILE_PATH)
-    # page_load_strategy auf 'eager' für schnellere Navigation
-    options.set_capability("pageLoadStrategy", "eager")
-    service = Service(GECKO_DRIVER_PATH)
-    return webdriver.Firefox(service=service, options=options)
 
-# — rest unverändert —
-def verlasse_vollbild(driver):
+    # Start Firefox in private mode
+    options.set_preference("browser.privatebrowsing.autostart", True)
+    options.set_preference("dom.disable_open_during_load", True)  # Popup blocker
+    options.set_preference("dom.popup_maximum", 0)
+
+    options.page_load_strategy = 'eager'
+
+    service = Service(executable_path=GECKO_DRIVER_PATH)
+    driver = webdriver.Firefox(service=service, options=options)
+
+    # Install uBlock Origin (adblocker)
+    driver.install_addon(UBLOCK_ORIGIN_PATH, temporary=True)
+    print("[✓] uBlock Origin adblocker installed.")
+
+    return driver
+
+# === UTILITY FUNCTIONS ===
+def exit_fullscreen(driver):
     try:
         driver.switch_to.default_content()
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        time.sleep(1)
-    except:
-        pass
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"[!] Error exiting fullscreen: {e}")
 
 def switch_to_video_frame(driver):
     try:
-        iframe = WebDriverWait(driver, 10).until(
+        iframe = WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.TAG_NAME, "iframe"))
         )
         driver.switch_to.frame(iframe)
-        print("🧭 In Videoplayer-Frame gewechselt.")
+        print("[>] Switched to video iframe.")
         return True
-    except:
-        print("❌ Kein iframe mit Video gefunden.")
+    except Exception as e:
+        print(f"[!] No iframe found: {e}")
         return False
 
-def video_laeuft(driver):
+def is_video_playing(driver):
     try:
-        return driver.execute_script("return !!(document.querySelector('video') && !document.querySelector('video').paused)")
+        return driver.execute_script("""
+            const video = document.querySelector('video');
+            return video && !video.paused && video.readyState > 2;
+        """)
     except:
         return False
 
-def starte_video(driver):
+def play_video(driver):
     try:
-        print("🎯 Versuche, Video zu starten...")
-        video = WebDriverWait(driver, 8).until(
-            EC.presence_of_element_located((By.TAG_NAME, "video"))
+        print("[>] Starting video playback...")
+        video = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.TAG_NAME, "video"))
         )
         ActionChains(driver).move_to_element(video).click().perform()
-        print("✅ Video per Klick gestartet.")
-    except:
-        print("⚠️ Klick auf Video fehlgeschlagen.")
-
-def aktiviere_vollbild(driver):
-    try:
-        print("🖥️ Versuche JavaScript-Vollbild...")
-        js = """
-            const video = document.querySelector('video');
-            if (video?.requestFullscreen) { video.requestFullscreen(); return true; }
-            if (video?.webkitRequestFullscreen) { video.webkitRequestFullscreen(); return true; }
-            return false;
-        """
-        success = driver.execute_script(js)
-        if success:
-            print("✅ Vollbild per JS aktiviert.")
-        else:
-            print("❌ JS-Vollbild nicht unterstützt.")
+        print("[✓] Video started.")
     except Exception as e:
-        print("❌ Fehler beim Vollbild per JS:", e)
+        print(f"[!] Could not start video: {e}")
 
-def parse_url_info(driver):
+def enable_fullscreen(driver):
     try:
-        url = driver.current_url
-        print(f"🌐 Aktuelle URL: {url}")
-        match = re.search(r'/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)', url)
-        if match:
-            return match.group(1), int(match.group(2)), int(match.group(3))
-    except:
-        pass
+        driver.execute_script("""
+            const video = document.querySelector('video');
+            if (video.requestFullscreen) video.requestFullscreen();
+            else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+        """)
+        print("[✓] Fullscreen activated.")
+    except Exception as e:
+        print(f"[!] Error enabling fullscreen: {e}")
+
+def parse_episode_info(url):
+    match = re.search(r'/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)', url)
+    if match:
+        return match.group(1), int(match.group(2)), int(match.group(3))
     return None, None, None
 
-def springe_zu_folge(driver, serienname, staffelnummer, ziel_folgenummer):
-    try:
-        ziel_url = f"https://s.to/serie/stream/{serienname}/staffel-{staffelnummer}/episode-{ziel_folgenummer}"
-        print(f"➡️ Nächste Folge: {ziel_url}")
-        driver.switch_to.default_content()
-        driver.get(ziel_url)
-        WebDriverWait(driver, 10).until(lambda d: f"episode-{ziel_folgenummer}" in d.current_url)
-        return True
-    except:
-        return False
+def navigate_to_episode(driver, series_name, season, episode):
+    next_url = f"https://s.to/serie/stream/{series_name}/staffel-{season}/episode-{episode}"
+    print(f"[>] Navigating to: {next_url}")
+    driver.switch_to.default_content()
+    driver.get(next_url)
+    WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
 
-def warte_bis_video_fast_zu_ende(driver):
+def wait_until_video_ends(driver, buffer_seconds=3):
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script("return document.querySelector('video') && document.querySelector('video').readyState > 0;")
+    )
+    print("[>] Video playback in progress...")
+    while True:
+        remaining_time = driver.execute_script("""
+            const vid = document.querySelector('video');
+            return vid.duration - vid.currentTime;
+        """)
+        print(f"[>] Remaining: {int(remaining_time)} sec.", end="\r")
+        if remaining_time <= buffer_seconds:
+            print("\n[>] Episode ending soon, proceeding...")
+            break
+        time.sleep(2)
+
+def skip_intro(driver, seconds):
     try:
         WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return !!document.querySelector('video') && document.querySelector('video').readyState > 0")
+            lambda d: d.execute_script("return document.querySelector('video') && document.querySelector('video').readyState > 0;")
         )
-        print("🎥 Video erkannt – Laufzeit wird überwacht...")
-
-        while True:
-            position = driver.execute_script("return document.querySelector('video')?.currentTime || 0")
-            duration = driver.execute_script("return document.querySelector('video')?.duration || 0")
-            remaining = duration - position
-
-            print(f"⏳ Noch {int(remaining)} Sek. | {int(position)} / {int(duration)}", end='\r')
-
-            if remaining <= 3:
-                print("\n🛑 Video fast zu Ende – springe weiter.")
-                break
-            time.sleep(2)
+        driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+        print(f"[✓] Intro skipped ({seconds} sec).")
     except Exception as e:
-        print("❌ Fehler beim Überwachen:", e)
-        time.sleep(60)
+        print(f"[!] Error skipping intro: {e}")
 
-def folgenschleife(driver, serienname, staffelnummer, startfolge):
-    aktuelle = startfolge
+def play_episodes_loop(driver, series_name, season, episode):
+    current_episode = episode
     while True:
-        print(f"\n▶️ {serienname} – Staffel {staffelnummer}, Folge {aktuelle}")
+        print(f"\n[▶] Playing {series_name.capitalize()} – Season {season}, Episode {current_episode}")
 
         if switch_to_video_frame(driver):
-            if not video_laeuft(driver):
-                starte_video(driver)
-            
+            if not is_video_playing(driver):
+                play_video(driver)
+
             skip_intro(driver, INTRO_SKIP_SECONDS)
-            aktiviere_vollbild(driver)
-            warte_bis_video_fast_zu_ende(driver)
+            enable_fullscreen(driver)
+            wait_until_video_ends(driver)
         else:
-            print("❌ Kein Video gefunden – Abbruch.")
+            print("[!] Video frame not found. Exiting.")
             break
 
-        aktuelle += 1
-        verlasse_vollbild(driver)
+        current_episode += 1
+        exit_fullscreen(driver)
+        time.sleep(1)
+
+        try:
+            navigate_to_episode(driver, series_name, season, current_episode)
+        except:
+            print("[!] Unable to navigate to next episode. Exiting.")
+            break
         time.sleep(2)
-        if not springe_zu_folge(driver, serienname, staffelnummer, aktuelle):
-            print("❌ Keine weitere Folge gefunden.")
-            break
-        time.sleep(3)
 
+# === MAIN EXECUTION ===
 def main():
+    driver = start_browser()
     try:
-        driver = starte_browser()
         driver.get(START_URL)
-        input("🎬 Starte Folge 1 selbst (Hoster wählen, evtl. Play klicken) und drücke ENTER...")
+        input("[>] Choose the provider, start playback manually if necessary, then press ENTER to automate...")
 
-        serienname, staffelnummer, folgennummer = parse_url_info(driver)
-        if not serienname or not staffelnummer or not folgennummer:
-            print("❌ Serieninfo konnte nicht erkannt werden.")
-            driver.quit()
+        series_name, season, episode = parse_episode_info(driver.current_url)
+        if not series_name:
+            print("[!] Failed to identify series details. Exiting.")
             return
 
-        folgenschleife(driver, serienname, staffelnummer, folgennummer)
-        driver.quit()
+        play_episodes_loop(driver, series_name, season, episode)
+
     except Exception as e:
-        print("❌ Schwerer Fehler:", e)
+        print(f"[!] Critical error: {e}")
+    finally:
+        driver.quit()
+        print("[✓] Browser closed.")
 
 if __name__ == "__main__":
     main()
