@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import json
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.service import Service
@@ -17,6 +18,24 @@ INTRO_SKIP_SECONDS = 320
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, 'geckodriver.exe')
 UBLOCK_ORIGIN_PATH = os.path.join(SCRIPT_DIR, 'ublock_origin.xpi')
+PROGRESS_FILE = os.path.join(SCRIPT_DIR, 'progress.json')
+
+# === PROGRESS MANAGEMENT ===
+def save_progress(series, season, episode, position):
+    with open(PROGRESS_FILE, 'w') as f:
+        json.dump({
+            "series": series,
+            "season": season,
+            "episode": episode,
+            "position": position
+        }, f)
+    print(f"[✓] Progress saved at episode {episode}, position {position}s.")
+
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, 'r') as f:
+            return json.load(f)
+    return None
 
 # === BROWSER SETUP ===
 def start_browser():
@@ -26,7 +45,7 @@ def start_browser():
 
     # Start Firefox in private mode
     options.set_preference("browser.privatebrowsing.autostart", True)
-    options.set_preference("dom.disable_open_during_load", True)  # Popup blocker
+    options.set_preference("dom.disable_open_during_load", True)
     options.set_preference("dom.popup_maximum", 0)
 
     options.page_load_strategy = 'eager'
@@ -98,10 +117,8 @@ def parse_episode_info(url):
         return match.group(1), int(match.group(2)), int(match.group(3))
     return None, None, None
 
-def navigate_to_episode(driver, series_name, season, episode):
-    next_url = f"https://s.to/serie/stream/{series_name}/staffel-{season}/episode-{episode}"
-    print(f"[>] Navigating to: {next_url}")
-    driver.switch_to.default_content()
+def navigate_to_episode(driver, series, season, episode):
+    next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
     driver.get(next_url)
     WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
 
@@ -124,56 +141,92 @@ def wait_until_video_ends(driver, buffer_seconds=3):
 def skip_intro(driver, seconds):
     try:
         WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return document.querySelector('video') && document.querySelector('video').readyState > 0;")
+            lambda d: d.execute_script("return document.querySelector('video')?.readyState > 0;")
         )
         driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
-        print(f"[✓] Intro skipped ({seconds} sec).")
+        print(f"[✓] Intro skipped to {seconds}s.")
     except Exception as e:
         print(f"[!] Error skipping intro: {e}")
 
-def play_episodes_loop(driver, series_name, season, episode):
+def get_current_position(driver):
+    return driver.execute_script("return document.querySelector('video').currentTime || 0;")
+
+def play_episodes_loop(driver, series, season, episode, position=0):
     current_episode = episode
     while True:
-        print(f"\n[▶] Playing {series_name.capitalize()} – Season {season}, Episode {current_episode}")
+        print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
 
-        if switch_to_video_frame(driver):
-            if not is_video_playing(driver):
-                play_video(driver)
-
-            skip_intro(driver, INTRO_SKIP_SECONDS)
-            enable_fullscreen(driver)
-            wait_until_video_ends(driver)
-        else:
+        if not switch_to_video_frame(driver):
             print("[!] Video frame not found. Exiting.")
             break
+
+        if not is_video_playing(driver):
+            play_video(driver)
+
+        if position > 0:
+            skip_intro(driver, position)
+            position = 0
+        else:
+            skip_intro(driver, INTRO_SKIP_SECONDS)
+
+        enable_fullscreen(driver)
+
+        while True:
+            remaining_time = driver.execute_script("""
+                const vid = document.querySelector('video');
+                return vid.duration - vid.currentTime;
+            """)
+            current_pos = get_current_position(driver)
+            save_progress(series, season, current_episode, int(current_pos))
+
+            print(f"[>] Remaining: {int(remaining_time)} sec.", end="\r")
+            if remaining_time <= 3:
+                print("\n[>] Episode ending, next episode...")
+                break
+            time.sleep(2)
 
         current_episode += 1
         exit_fullscreen(driver)
         time.sleep(1)
 
         try:
-            navigate_to_episode(driver, series_name, season, current_episode)
+            navigate_to_episode(driver, series, season, current_episode)
         except:
-            print("[!] Unable to navigate to next episode. Exiting.")
+            print("[!] Next episode unavailable. Exiting.")
             break
         time.sleep(2)
 
 # === MAIN EXECUTION ===
 def main():
+    progress = load_progress()
     driver = start_browser()
-    try:
-        driver.get(START_URL)
-        input("[>] Choose the provider, start playback manually if necessary, then press ENTER to automate...")
 
-        series_name, season, episode = parse_episode_info(driver.current_url)
-        if not series_name:
-            print("[!] Failed to identify series details. Exiting.")
+    try:
+        if progress:
+            resume = input(f"[?] Resume from {progress['series'].capitalize()} S{progress['season']}E{progress['episode']} at {progress['position']}s? (Y/n): ")
+            if resume.lower() != 'n':
+                navigate_to_episode(driver, progress['series'], progress['season'], progress['episode'])
+                play_episodes_loop(driver, progress['series'], progress['season'], progress['episode'], progress['position'])
+                return
+
+        driver.get(START_URL)
+        input("[>] Select provider and start playback, then press ENTER...")
+
+        series, season, episode = parse_episode_info(driver.current_url)
+        if not series:
+            print("[!] Could not identify series. Exiting.")
             return
 
-        play_episodes_loop(driver, series_name, season, episode)
+        play_episodes_loop(driver, series, season, episode)
+
+    except KeyboardInterrupt:
+        current_pos = get_current_position(driver)
+        save_progress(series, season, episode, int(current_pos))
+        print("\n[!] Interrupted by user, progress saved.")
 
     except Exception as e:
         print(f"[!] Critical error: {e}")
+
     finally:
         driver.quit()
         print("[✓] Browser closed.")
