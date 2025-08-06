@@ -45,14 +45,13 @@ def load_progress():
 def start_browser():
     profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
     options = webdriver.FirefoxOptions()
+    options.set_preference("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0")
     if HEADLESS:
         options.add_argument("--headless")
-        
     service = Service(executable_path=GECKO_DRIVER_PATH)
     options.profile = profile_path
     driver = webdriver.Firefox(service=service, options=options)
     return driver
-
 
 # === UTILITY FUNCTIONS ===
 def exit_fullscreen(driver):
@@ -157,59 +156,99 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         time.sleep(2)
 
 def inject_sidebar(driver, db):
-    # 1. Baue Einträge
+    # 1) Baue die Listeneinträge
     entries = []
     for series, data in db.items():
+        safe_series = series.replace("'", "\\'")
         entries.append(
-            f'<li onclick="window.selectSeries(\'{series}\')" style="user-select:none">'
-            f'{series} S{data["season"]}E{data["episode"]} @ {data["position"]}s'
-            '</li>'
+            f'<li style="padding:8px 12px; cursor:pointer; border-bottom:1px solid #444;" '
+            f'onclick="window.selectSeries(\'{safe_series}\')">'
+            f'<b>{series}</b> S{data["season"]}E{data["episode"]} '
+            f'<span style="color:#aaa; font-size:12px;">@ {data["position"]}s</span>'
+            f'</li>'
         )
+    inner_ul = "\n".join(entries)
 
-    # 2. Sidebar-HTML
-    safe_sidebar_html = """
-    <style>
-        #bingeSidebar {position:fixed;top:0;left:0;width:250px;height:100vh;background:#222;color:#eee;z-index:999999;padding:10px 0;box-shadow:2px 0 12px #0006;}
-        #bingeSidebar h2 {text-align:center;font-size:1.2em;margin-bottom:10px;}
-        #bingeSidebar ul {list-style:none;padding:0;margin:0;}
-        #bingeSidebar li {padding:7px 20px;cursor:pointer;border-bottom:1px solid #333;}
-        #bingeSidebar li:hover {background:#444;}
-        #bingeSidebar .closeBtn {position:absolute;right:10px;top:8px;cursor:pointer;}
-    </style>
-    <div id="bingeSidebar">
-        <span class="closeBtn" onclick="document.getElementById('bingeSidebar').remove();">✕</span>
-        <h2>BingeWatcher Progress</h2>
-        <ul>
-            %s
+    # 2) JavaScript zum Einfügen der Sidebar
+    js = f"""
+    // Alte Sidebar entfernen, falls vorhanden
+    var old = document.getElementById('bingeSidebar');
+    if (old) old.remove();
+
+    // Neues Sidebar-Element anlegen
+    var d = document.createElement('div');
+    d.id = 'bingeSidebar';
+    Object.assign(d.style, {{
+        position: 'fixed',
+        left: '0',
+        top: '0',
+        width: '260px',
+        height: '100vh',
+        background: '#222',
+        color: '#eee',
+        zIndex: '999999',
+        fontFamily: 'Segoe UI, Arial, sans-serif',
+        boxShadow: '2px 0 16px #000a',
+        overflowY: 'auto'
+    }});
+    d.innerHTML = `
+        <!-- Kopfzeile mit Skip und Close -->
+        <div style="
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            padding:10px 12px;
+            border-bottom:1px solid #444;
+        ">
+            <button id="bwSkip" style="
+                background:#555;
+                border:none;
+                color:#fff;
+                padding:4px 8px;
+                cursor:pointer;
+                font-size:12px;
+            ">Skip ▶</button>
+            <span style="font-size:16px; font-weight:700;">BingeWatcher</span>
+            <button id="bwQuit" style="
+                background:#a33;
+                border:none;
+                color:#fff;
+                padding:4px 8px;
+                cursor:pointer;
+                font-size:12px;
+            ">Close ✕</button>
+        </div>
+        <!-- Liste der Serien -->
+        <ul style="
+            list-style:none;
+            margin:0;
+            padding:0;
+        ">
+            {inner_ul}
         </ul>
-    </div>
-    """ % "\n".join(entries)
+    `;
+    document.body.appendChild(d);
 
-    # 3. Entferne alte Sidebar
-    remove_sidebar_js = """
-    var el = document.getElementById('bingeSidebar');
-    if (el) el.remove();
-    """
-    driver.execute_script(remove_sidebar_js)
+    // Skip-Button: Springe ans Ende des Videos
+    document.getElementById('bwSkip').onclick = function() {{
+        var vid = document.querySelector('video');
+        if (vid && !vid.paused) {{
+            vid.currentTime = vid.duration - 1;
+        }}
+    }};
 
-    # 4. Füge Sidebar HTML ein (ohne script!)
-    js_html = f"""
-    if (!document.fullscreenElement) {{
-        var sidebarDiv = document.createElement('div');
-        sidebarDiv.innerHTML = `{safe_sidebar_html}`;
-        document.body.appendChild(sidebarDiv.firstElementChild);
-    }}
-    """
-    driver.execute_script(js_html)
+    // Close-Button: Fenster schließen
+    document.getElementById('bwQuit').onclick = function() {{
+        window.close();
+    }};
 
-    # 5. Injecte Handler-Funktion (NACH dem Einfügen!)
-    sidebar_js = """
-    window.selectSeries = function(seriesName) {
+    // Handler für Listeneinträge
+    window.selectSeries = function(seriesName) {{
         document.cookie = "bw_series=" + encodeURIComponent(seriesName) + "; path=/";
         location.reload();
-    }
+    }};
     """
-    driver.execute_script('document.body.innerHTML += `<div id="sidebar_debug" style="position:fixed;top:80px;left:0;z-index:999999;background:#0f0;color:#000;padding:16px;font-size:24px;">SIDEBAR-Debug</div>`;')
+    driver.execute_script(js)
 
 def get_selected_series_cookie(driver):
     for cookie in driver.get_cookies():
@@ -226,27 +265,32 @@ def main():
     db = load_progress()
     driver.get(START_URL)
     inject_sidebar(driver, db)
-
-    # Inject Sidebar (UI) IMMER wenn nicht Fullscreen!
-    inject_sidebar(driver, db)
     time.sleep(1)
 
-    selected = get_selected_series_cookie(driver)
-    if selected and selected in db:
-        data = db[selected]
-        print(f"[✓] User selected: {selected} S{data['season']}E{data['episode']} @ {data['position']}s")
-        delete_series_cookie(driver)
-        navigate_to_episode(driver, selected, data['season'], data['episode'])
-        play_episodes_loop(driver, selected, data['season'], data['episode'], data['position'])
-        return
+    while True:
+        db = load_progress()
+        inject_sidebar(driver, db)
+        selected = get_selected_series_cookie(driver)
+        if selected and selected in db:
+            data = db[selected]
+            print(f"[✓] User selected: {selected} S{data['season']}E{data['episode']} @ {data['position']}s")
+            delete_series_cookie(driver)
+            # Jetzt: Lade direkt die gewünschte Serie!
+            navigate_to_episode(driver, selected, data['season'], data['episode'], db)
+            play_episodes_loop(driver, selected, data['season'], data['episode'], data['position'])
+            # Nach Abschluss: zurück zu einer "neutralen" Seite (z.B. Auswahlseite oder about:blank)
+            driver.get("about:blank")
+            time.sleep(1)
+            continue
 
-    # Wenn kein gespeicherter Fortschritt ausgewählt, neues starten:
-    input("[>] Select provider, start playback, then press ENTER...")
-    series, season, episode = parse_episode_info(driver.current_url)
-    if not series:
-        print("[!] Could not identify series details. Exiting.")
-        return
-    play_episodes_loop(driver, series, season, episode)
+        input("[>] Select provider, start playback, then press ENTER...")
+        series, season, episode = parse_episode_info(driver.current_url)
+        if not series:
+            print("[!] Could not identify series details. Exiting.")
+            return
+        play_episodes_loop(driver, series, season, episode)
+        driver.get("about:blank")
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
