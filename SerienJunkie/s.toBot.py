@@ -12,7 +12,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # === CONFIGURATION ===
 HEADLESS = False
-START_URL = 'https://s.to/serie/stream/one-piece/staffel-1/episode-1'
+START_URL = 'https://s.to/'
 INTRO_SKIP_SECONDS = 320
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -110,20 +110,33 @@ def get_current_position(driver):
     return driver.execute_script("return document.querySelector('video').currentTime || 0;")
 
 def play_episodes_loop(driver, series, season, episode, position=0):
-    db = load_progress()
     current_episode = episode
 
     while True:
-        # check "close" clicked
+        # Ganz oben immer das aktuelle progress.json einlesen
+        db = load_progress()
+
+        # 1) Close?
         if get_cookie(driver, 'bw_quit') == '1':
             driver.delete_cookie('bw_quit')
             return
-        
-        print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
 
+        # 2) Delete?
+        if get_cookie(driver, 'bw_delete') == '1':
+            name = get_cookie(driver, 'bw_delete')
+            driver.delete_cookie('bw_delete')
+            if name in db:
+                del db[name]
+                with open(PROGRESS_DB_FILE, 'w') as f:
+                    json.dump(db, f, indent=2)
+            return  # oder break, je nachdem was du willst
+
+        print(f"\n[▶] Playing {series} S{season}E{current_episode}")
+
+        # Navigiere **nur einmal** pro Folge
         navigate_to_episode(driver, series, season, current_episode, db)
         inject_sidebar(driver, db)
-        
+
         if not switch_to_video_frame(driver):
             break
 
@@ -131,25 +144,31 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             play_video(driver)
 
         skip_intro(driver, position or INTRO_SKIP_SECONDS)
-        position = 0
         enable_fullscreen(driver)
 
+        # Haupt‐Playback‐Loop
         while True:
-            remaining_time = driver.execute_script("""
-                const vid = document.querySelector('video');
-                return vid.duration - vid.currentTime;
-            """)
+            if get_cookie(driver, 'bw_quit') == '1':
+                driver.delete_cookie('bw_quit')
+                return
+
+            # hier auch auf delete prüfen, wenn gewünscht…
+
+            remaining = driver.execute_script(
+                "const v = document.querySelector('video'); return v.duration - v.currentTime;"
+            )
             current_pos = get_current_position(driver)
             save_progress(series, season, current_episode, int(current_pos))
 
-            print(f"[>] Remaining: {int(remaining_time)} sec.", end="\r")
-            if remaining_time <= 3:
+            print(f"[>] Remaining {int(remaining)}s", end="\r")
+            if remaining <= 3:
                 break
             time.sleep(2)
 
-        current_episode += 1
+        # am Ende einer Episode
         exit_fullscreen(driver)
         time.sleep(1)
+        current_episode += 1
         db = load_progress() 
 
         try:
@@ -177,10 +196,13 @@ def inject_sidebar(driver, db):
     for series, data in db.items():
         safe = series.replace("'", "\\'")
         entries.append(f'''
-            <li data-series="{safe}" style="
-                display:flex; justify-content:space-between;
-                padding:8px 12px; cursor:pointer; border-bottom:1px solid #444;
-            ">
+            <li data-series="{safe}" 
+                data-season="{data["season"]}" 
+                data-episode="{data["episode"]}"
+                style="
+                    display:flex; justify-content:space-between;
+                    padding:8px 12px; cursor:pointer; border-bottom:1px solid #444;
+                ">
               <span class="bw-select"><b>{series}</b> 
                  S{data["season"]}E{data["episode"]} 
                  <small style="color:#aaa;">@ {data["position"]}s</small>
@@ -195,7 +217,10 @@ def inject_sidebar(driver, db):
 
     # 3) inject the container
     js = f"""
-    (function(){{
+    (function waitForBodyAndInject() {{
+      if (!document.body) {{
+        return window.requestAnimationFrame(waitForBodyAndInject);
+      }}
       // altes weg
       let old = document.getElementById('bingeSidebar');
       if (old) old.remove();
@@ -237,12 +262,17 @@ def inject_sidebar(driver, db):
           location.reload();
         }});
 
-      // Auswahl: set cookie + reload
+      // Auswahl: direkte Navigation
       d.querySelectorAll('.bw-select').forEach(el =>
-        el.addEventListener('click', e => {{
-          let name = el.parentElement.dataset.series;
-          document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
-          location.reload();
+        el.addEventListener('click', () => {{
+          const li = el.parentElement;
+          const series = li.dataset.series;
+          const season = li.dataset.season;
+          const episode = li.dataset.episode;
+          location.href =
+            '/serie/stream/' + series +
+            '/staffel-' + season +
+            '/episode-' + episode;
         }})
       );
 
@@ -267,43 +297,46 @@ def main():
         time.sleep(0.5)
 
         # 1) Close?
-        if get_cookie(driver, 'bw_quit') == '1':
-            print("[!] Close geklickt – beende Programm.")
+        if get_cookie(driver,'bw_quit')=='1':
             driver.delete_cookie('bw_quit')
             driver.quit()
             return
 
         # 2) Delete?
-        to_del = get_cookie(driver, 'bw_delete')
+        to_del = get_cookie(driver,'bw_delete')
         if to_del and to_del in db:
-            print(f"[–] Entferne Serie „{to_del}“ aus DB.")
+            # a) JSON updaten
             del db[to_del]
-            with open(PROGRESS_DB_FILE, 'w') as f:
-                json.dump(db, f, indent=2)
+            with open(PROGRESS_DB_FILE,'w') as f:
+                json.dump(db,f,indent=2)
             driver.delete_cookie('bw_delete')
-            driver.get(START_URL)
+
+            # b) Befinde ich mich noch auf der Seite der gelöschten Serie?
+            cur = driver.current_url
+            ser,_,_ = parse_episode_info(cur)
+            if ser == to_del:
+                driver.get(START_URL)
+            # ansonsten: einfach in der nächsten Loop-Iteration die Sidebar neu bauen
             continue
 
         # 3) Auswahl?
-        sel = get_cookie(driver, 'bw_series')
+        sel = get_cookie(driver,'bw_series')
         if sel and sel in db:
             driver.delete_cookie('bw_series')
-            s, se, ep = sel, db[sel]['season'], db[sel]['episode']
-            navigate_to_episode(driver, s, se, ep, db)
-            play_episodes_loop(driver, s, se, ep, db[sel]['position'])
+            s,se,ep = sel, db[sel]['season'], db[sel]['episode']
+            navigate_to_episode(driver,s,se,ep,db)
+            play_episodes_loop(driver,s,se,ep,db[sel]['position'])
             driver.get(START_URL)
             continue
 
-        # 4) Auto-Erkennung: Video-URL automatisch starten
-        cur = driver.current_url
-        series, season, episode = parse_episode_info(cur)
-        if series:
-            start_pos = db.get(series, {}).get('position', 0)
-            play_episodes_loop(driver, series, season, episode, start_pos)
+        # 4) Auto-Erkennung?
+        ser,se,ep = parse_episode_info(driver.current_url)
+        if ser:
+            pos = db.get(ser,{}).get('position',0)
+            play_episodes_loop(driver,ser,se,ep,pos)
             driver.get(START_URL)
             continue
 
-        # 5) Sonst kurz warten und neu prüfen
         time.sleep(1)
 
 if __name__ == "__main__":
