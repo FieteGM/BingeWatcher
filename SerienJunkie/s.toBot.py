@@ -155,141 +155,148 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             break
         time.sleep(2)
 
+def delete_series_cookie(driver):
+    driver.delete_cookie('bw_series')
+    
+def get_cookie(driver, name):
+    for c in driver.get_cookies():
+        if c['name'] == name:
+            return c['value']
+    return None
+
 def inject_sidebar(driver, db):
-    # 1) Baue die Listeneinträge
+    # 1) Baue die Listeneinträge mit Lösch-X
     entries = []
     for series, data in db.items():
-        safe_series = series.replace("'", "\\'")
-        entries.append(
-            f'<li style="padding:8px 12px; cursor:pointer; border-bottom:1px solid #444;" '
-            f'onclick="window.selectSeries(\'{safe_series}\')">'
-            f'<b>{series}</b> S{data["season"]}E{data["episode"]} '
-            f'<span style="color:#aaa; font-size:12px;">@ {data["position"]}s</span>'
-            f'</li>'
-        )
+        safe = series.replace("'", "\\'")
+        entries.append(f'''
+            <li style="display:flex;justify-content:space-between;
+                       padding:8px 12px;cursor:pointer;
+                       border-bottom:1px solid #444;">
+              <span onclick="selectSeries('{safe}')">
+                <b>{series}</b> S{data["season"]}E{data["episode"]}
+                <span style="color:#aaa;font-size:12px;">@ {data["position"]}s</span>
+              </span>
+              <span onclick="deleteSeries('{safe}')"
+                    style="color:#a33;cursor:pointer;padding-left:8px;font-weight:700;">
+                ✕
+              </span>
+            </li>''')
     inner_ul = "\n".join(entries)
 
-    # 2) JavaScript zum Einfügen der Sidebar
+    # 2) JS zum Einfügen der Sidebar
     js = f"""
-    // Alte Sidebar entfernen, falls vorhanden
+    // entferne Alt-Sidebar
     var old = document.getElementById('bingeSidebar');
     if (old) old.remove();
 
-    // Neues Sidebar-Element anlegen
     var d = document.createElement('div');
     d.id = 'bingeSidebar';
     Object.assign(d.style, {{
-        position: 'fixed',
-        left: '0',
-        top: '0',
-        width: '260px',
-        height: '100vh',
-        background: '#222',
-        color: '#eee',
-        zIndex: '999999',
-        fontFamily: 'Segoe UI, Arial, sans-serif',
-        boxShadow: '2px 0 16px #000a',
-        overflowY: 'auto'
+      position:'fixed', left:'0', top:'0',
+      width:'260px', height:'100vh',
+      background:'#222', color:'#eee',
+      zIndex:'999999', fontFamily:'Segoe UI, Arial, sans-serif',
+      boxShadow:'2px 0 16px #000a', overflowY:'auto'
     }});
     d.innerHTML = `
-        <!-- Kopfzeile mit Skip und Close -->
-        <div style="
-            display:flex;
-            justify-content:space-between;
-            align-items:center;
-            padding:10px 12px;
-            border-bottom:1px solid #444;
-        ">
-            <button id="bwSkip" style="
-                background:#555;
-                border:none;
-                color:#fff;
-                padding:4px 8px;
-                cursor:pointer;
-                font-size:12px;
-            ">Skip ▶</button>
-            <span style="font-size:16px; font-weight:700;">BingeWatcher</span>
-            <button id="bwQuit" style="
-                background:#a33;
-                border:none;
-                color:#fff;
-                padding:4px 8px;
-                cursor:pointer;
-                font-size:12px;
-            ">Close ✕</button>
-        </div>
-        <!-- Liste der Serien -->
-        <ul style="
-            list-style:none;
-            margin:0;
-            padding:0;
-        ">
-            {inner_ul}
-        </ul>
+      <div style="display:flex;justify-content:space-between;
+                  align-items:center;padding:10px 12px;
+                  border-bottom:1px solid #444;">
+        <button id="bwSkip" style="background:#555;border:none;
+                                   color:#fff;padding:4px 8px;
+                                   cursor:pointer;font-size:12px;">
+          Skip ▶
+        </button>
+        <span style="font-size:16px;font-weight:700;">
+          BingeWatcher
+        </span>
+        <button id="bwQuit" style="background:#a33;border:none;
+                                   color:#fff;padding:4px 8px;
+                                   cursor:pointer;font-size:12px;">
+          Close ✕
+        </button>
+      </div>
+      <ul style="list-style:none;margin:0;padding:0;">
+        {inner_ul}
+      </ul>
     `;
     document.body.appendChild(d);
 
-    // Skip-Button: Springe ans Ende des Videos
+    // Skip-Handler
     document.getElementById('bwSkip').onclick = function() {{
-        var vid = document.querySelector('video');
-        if (vid && !vid.paused) {{
-            vid.currentTime = vid.duration - 1;
-        }}
+      var vid = document.querySelector('video');
+      if (vid) vid.currentTime = vid.duration - 1;
     }};
 
-    // Close-Button: Fenster schließen
+    // Close-Handler
     document.getElementById('bwQuit').onclick = function() {{
-        window.close();
+      document.cookie = "bw_quit=1; path=/";
+      location.reload();
     }};
 
-    // Handler für Listeneinträge
-    window.selectSeries = function(seriesName) {{
-        document.cookie = "bw_series=" + encodeURIComponent(seriesName) + "; path=/";
-        location.reload();
+    // Auswahl-Handler
+    window.selectSeries = function(name) {{
+      document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
+      location.reload();
+    }};
+
+    // Lösch-Handler
+    window.deleteSeries = function(name) {{
+      document.cookie = "bw_delete=" + encodeURIComponent(name) + "; path=/";
+      location.reload();
     }};
     """
     driver.execute_script(js)
 
-def get_selected_series_cookie(driver):
-    for cookie in driver.get_cookies():
-        if cookie['name'] == 'bw_series':
-            return cookie['value']
-    return None
 
-def delete_series_cookie(driver):
-    driver.delete_cookie('bw_series')
-
-# === MAIN EXECUTION ===
 def main():
     driver = start_browser()
-    db = load_progress()
     driver.get(START_URL)
-    inject_sidebar(driver, db)
-    time.sleep(1)
 
     while True:
         db = load_progress()
         inject_sidebar(driver, db)
-        selected = get_selected_series_cookie(driver)
-        if selected and selected in db:
-            data = db[selected]
-            print(f"[✓] User selected: {selected} S{data['season']}E{data['episode']} @ {data['position']}s")
-            delete_series_cookie(driver)
-            # Jetzt: Lade direkt die gewünschte Serie!
-            navigate_to_episode(driver, selected, data['season'], data['episode'], db)
-            play_episodes_loop(driver, selected, data['season'], data['episode'], data['position'])
-            # Nach Abschluss: zurück zu einer "neutralen" Seite (z.B. Auswahlseite oder about:blank)
-            driver.get("about:blank")
-            time.sleep(1)
+        time.sleep(0.5)
+
+        # 1) Close?
+        if get_cookie(driver, 'bw_quit') == '1':
+            print("[!] Close geklickt – beende Programm.")
+            driver.delete_cookie('bw_quit')
+            driver.quit()
+            return
+
+        # 2) Delete-Cookie?
+        to_del = get_cookie(driver, 'bw_delete')
+        if to_del and to_del in db:
+            print(f"[–] Entferne Serie „{to_del}“ aus DB.")
+            del db[to_del]
+            with open(PROGRESS_DB_FILE, 'w') as f:
+                json.dump(db, f, indent=2)
+            driver.delete_cookie('bw_delete')
+            continue  # Sidebar neu bauen
+
+        # 3) Auswahl-Cookie?
+        sel = get_cookie(driver, 'bw_series')
+        if sel and sel in db:
+            driver.delete_cookie('bw_series')
+            s, se, ep = sel, db[sel]['season'], db[sel]['episode']
+            navigate_to_episode(driver, s, se, ep, db)
+            play_episodes_loop(driver, s, se, ep, db[sel]['position'])
+            driver.get(START_URL)
             continue
 
-        input("[>] Select provider, start playback, then press ENTER...")
-        series, season, episode = parse_episode_info(driver.current_url)
-        if not series:
-            print("[!] Could not identify series details. Exiting.")
-            return
-        play_episodes_loop(driver, series, season, episode)
-        driver.get("about:blank")
+        # 4) Automatische Erkennung des Streams (kein input mehr!)
+        cur = driver.current_url
+        url_series, url_se, url_ep = parse_episode_info(cur)
+        if url_series:
+            # Wenn die URL stimmt, starten wir direkt
+            start_pos = db.get(url_series, {}).get('position', 0)
+            play_episodes_loop(driver, url_series, url_se, url_ep, start_pos)
+            driver.get(START_URL)
+            continue
+
+        # 5) Ansonsten warten wir kurz und prüfen erneut
         time.sleep(1)
 
 if __name__ == "__main__":
