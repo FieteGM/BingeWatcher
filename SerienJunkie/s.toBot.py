@@ -114,6 +114,11 @@ def play_episodes_loop(driver, series, season, episode, position=0):
     current_episode = episode
 
     while True:
+        # check "close" clicked
+        if get_cookie(driver, 'bw_quit') == '1':
+            driver.delete_cookie('bw_quit')
+            return
+        
         print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
 
         navigate_to_episode(driver, series, season, current_episode, db)
@@ -164,80 +169,93 @@ def get_cookie(driver, name):
     return None
 
 def inject_sidebar(driver, db):
-    # ⚠️ First jump out of any <iframe> back to the main page!
+    # 1) always come out of any iframe
     driver.switch_to.default_content()
 
-    # 1) Baue die Listeneinträge mit Lösch-X
+    # 2) build list‐item HTML
     entries = []
     for series, data in db.items():
         safe = series.replace("'", "\\'")
-        entries.append(f"""
-            <li style="display:flex;justify-content:space-between;
-                       padding:8px 12px;cursor:pointer;
-                       border-bottom:1px solid #444;">
-              <span onclick="window.selectSeries('{safe}')">
-                <b>{series}</b> S{data['season']}E{data['episode']}
-                <span style="color:#aaa;font-size:12px;">@ {data['position']}s</span>
+        entries.append(f'''
+            <li data-series="{safe}" style="
+                display:flex; justify-content:space-between;
+                padding:8px 12px; cursor:pointer; border-bottom:1px solid #444;
+            ">
+              <span class="bw-select"><b>{series}</b> 
+                 S{data["season"]}E{data["episode"]} 
+                 <small style="color:#aaa;">@ {data["position"]}s</small>
               </span>
-              <span onclick="window.deleteSeries('{safe}')"
-                    style="color:#a33;cursor:pointer;padding-left:8px;font-weight:700;">
+              <span class="bw-delete" data-series="{safe}"
+                    style="color:#a33;cursor:pointer;font-weight:700;">
                 ✕
               </span>
-            </li>""")
+            </li>
+        ''')
     inner_ul = "\n".join(entries)
 
-    # 2) JS zum Einfügen der Sidebar (im _Hauptdokument_)
+    # 3) inject the container
     js = f"""
     (function(){{
-      var old = document.getElementById('bingeSidebar');
-      if(old) old.remove();
+      // altes weg
+      let old = document.getElementById('bingeSidebar');
+      if (old) old.remove();
 
-      var d = document.createElement('div');
+      // neues Sidebar
+      let d = document.createElement('div');
       d.id = 'bingeSidebar';
       Object.assign(d.style, {{
         position:'fixed', left:'0', top:'0',
         width:'260px', height:'100vh',
         background:'#222', color:'#eee',
-        zIndex:'999999', fontFamily:'Segoe UI, Arial, sans-serif',
+        zIndex:'999999', fontFamily:'Segoe UI,Arial,sans-serif',
         boxShadow:'2px 0 16px #000a', overflowY:'auto'
       }});
       d.innerHTML = `
         <div style="display:flex;justify-content:space-between;
                     align-items:center;padding:10px;border-bottom:1px solid #444;">
-          <button id="bwSkip" style="background:#555;border:none;
-                                     color:#fff;padding:4px 8px;cursor:pointer;">
-            Skip ▶
-          </button>
+          <button id="bwSkip">Skip ▶</button>
           <span style="font-size:16px;font-weight:700;">BingeWatcher</span>
-          <button id="bwQuit" style="background:#a33;border:none;
-                                     color:#fff;padding:4px 8px;cursor:pointer;">
-            Close ✕
-          </button>
+          <button id="bwQuit">Close ✕</button>
         </div>
-        <ul style="list-style:none;margin:0;padding:0;">{inner_ul}</ul>
+        <ul style="list-style:none;margin:0;padding:0;">
+          {inner_ul}
+        </ul>
       `;
       document.body.appendChild(d);
 
       // Skip
-      document.getElementById('bwSkip').onclick = function(){{
-        var v = document.querySelector('video');
-        if(v) v.currentTime = v.duration - 1;
-      }};
-      // Close
-      document.getElementById('bwQuit').onclick = function(){{
-        document.cookie = "bw_quit=1; path=/";
-      }};
-      // Auswahl
-      window.selectSeries = function(name){{
-        document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
-      }};
-      // Löschen
-      window.deleteSeries = function(name){{
-        document.cookie = "bw_delete=" + encodeURIComponent(name) + "; path=/";
-      }};
+      document.getElementById('bwSkip')
+        .addEventListener('click', () => {{
+          let v = document.querySelector('video');
+          if (v) v.currentTime = v.duration - 1;
+        }});
+
+      // Close: set cookie + reload, damit Python es sieht
+      document.getElementById('bwQuit')
+        .addEventListener('click', () => {{
+          document.cookie = "bw_quit=1; path=/";
+          location.reload();
+        }});
+
+      // Auswahl: set cookie + reload
+      d.querySelectorAll('.bw-select').forEach(el =>
+        el.addEventListener('click', e => {{
+          let name = el.parentElement.dataset.series;
+          document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
+          location.reload();
+        }})
+      );
+
+      // Löschen: set cookie + reload
+      d.querySelectorAll('.bw-delete').forEach(el =>
+        el.addEventListener('click', e => {{
+          let name = el.dataset.series;
+          document.cookie = "bw_delete=" + encodeURIComponent(name) + "; path=/";
+          location.reload();
+        }})
+      );
     }})();"""
     driver.execute_script(js)
-
 
 def main():
     driver = start_browser()
