@@ -28,7 +28,6 @@ def save_progress(series, season, episode, position):
     db[series] = {"season": season, "episode": episode, "position": position}
     with open(PROGRESS_DB_FILE, 'w') as f:
         json.dump(db, f, indent=2)
-    print(f"[✓] Progress saved: {series} S{season}E{episode} @ {position}s")
 
 def load_progress():
     if os.path.exists(PROGRESS_DB_FILE):
@@ -165,88 +164,78 @@ def get_cookie(driver, name):
     return None
 
 def inject_sidebar(driver, db):
+    # ⚠️ First jump out of any <iframe> back to the main page!
+    driver.switch_to.default_content()
+
     # 1) Baue die Listeneinträge mit Lösch-X
     entries = []
     for series, data in db.items():
         safe = series.replace("'", "\\'")
-        entries.append(f'''
+        entries.append(f"""
             <li style="display:flex;justify-content:space-between;
                        padding:8px 12px;cursor:pointer;
                        border-bottom:1px solid #444;">
-              <span onclick="selectSeries('{safe}')">
-                <b>{series}</b> S{data["season"]}E{data["episode"]}
-                <span style="color:#aaa;font-size:12px;">@ {data["position"]}s</span>
+              <span onclick="window.selectSeries('{safe}')">
+                <b>{series}</b> S{data['season']}E{data['episode']}
+                <span style="color:#aaa;font-size:12px;">@ {data['position']}s</span>
               </span>
-              <span onclick="deleteSeries('{safe}')"
+              <span onclick="window.deleteSeries('{safe}')"
                     style="color:#a33;cursor:pointer;padding-left:8px;font-weight:700;">
                 ✕
               </span>
-            </li>''')
+            </li>""")
     inner_ul = "\n".join(entries)
 
-    # 2) JS zum Einfügen der Sidebar
+    # 2) JS zum Einfügen der Sidebar (im _Hauptdokument_)
     js = f"""
-    // entferne Alt-Sidebar
-    var old = document.getElementById('bingeSidebar');
-    if (old) old.remove();
+    (function(){{
+      var old = document.getElementById('bingeSidebar');
+      if(old) old.remove();
 
-    var d = document.createElement('div');
-    d.id = 'bingeSidebar';
-    Object.assign(d.style, {{
-      position:'fixed', left:'0', top:'0',
-      width:'260px', height:'100vh',
-      background:'#222', color:'#eee',
-      zIndex:'999999', fontFamily:'Segoe UI, Arial, sans-serif',
-      boxShadow:'2px 0 16px #000a', overflowY:'auto'
-    }});
-    d.innerHTML = `
-      <div style="display:flex;justify-content:space-between;
-                  align-items:center;padding:10px 12px;
-                  border-bottom:1px solid #444;">
-        <button id="bwSkip" style="background:#555;border:none;
-                                   color:#fff;padding:4px 8px;
-                                   cursor:pointer;font-size:12px;">
-          Skip ▶
-        </button>
-        <span style="font-size:16px;font-weight:700;">
-          BingeWatcher
-        </span>
-        <button id="bwQuit" style="background:#a33;border:none;
-                                   color:#fff;padding:4px 8px;
-                                   cursor:pointer;font-size:12px;">
-          Close ✕
-        </button>
-      </div>
-      <ul style="list-style:none;margin:0;padding:0;">
-        {inner_ul}
-      </ul>
-    `;
-    document.body.appendChild(d);
+      var d = document.createElement('div');
+      d.id = 'bingeSidebar';
+      Object.assign(d.style, {{
+        position:'fixed', left:'0', top:'0',
+        width:'260px', height:'100vh',
+        background:'#222', color:'#eee',
+        zIndex:'999999', fontFamily:'Segoe UI, Arial, sans-serif',
+        boxShadow:'2px 0 16px #000a', overflowY:'auto'
+      }});
+      d.innerHTML = `
+        <div style="display:flex;justify-content:space-between;
+                    align-items:center;padding:10px;border-bottom:1px solid #444;">
+          <button id="bwSkip" style="background:#555;border:none;
+                                     color:#fff;padding:4px 8px;cursor:pointer;">
+            Skip ▶
+          </button>
+          <span style="font-size:16px;font-weight:700;">BingeWatcher</span>
+          <button id="bwQuit" style="background:#a33;border:none;
+                                     color:#fff;padding:4px 8px;cursor:pointer;">
+            Close ✕
+          </button>
+        </div>
+        <ul style="list-style:none;margin:0;padding:0;">{inner_ul}</ul>
+      `;
+      document.body.appendChild(d);
 
-    // Skip-Handler
-    document.getElementById('bwSkip').onclick = function() {{
-      var vid = document.querySelector('video');
-      if (vid) vid.currentTime = vid.duration - 1;
-    }};
-
-    // Close-Handler
-    document.getElementById('bwQuit').onclick = function() {{
-      document.cookie = "bw_quit=1; path=/";
-      location.reload();
-    }};
-
-    // Auswahl-Handler
-    window.selectSeries = function(name) {{
-      document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
-      location.reload();
-    }};
-
-    // Lösch-Handler
-    window.deleteSeries = function(name) {{
-      document.cookie = "bw_delete=" + encodeURIComponent(name) + "; path=/";
-      location.reload();
-    }};
-    """
+      // Skip
+      document.getElementById('bwSkip').onclick = function(){{
+        var v = document.querySelector('video');
+        if(v) v.currentTime = v.duration - 1;
+      }};
+      // Close
+      document.getElementById('bwQuit').onclick = function(){{
+        document.cookie = "bw_quit=1; path=/";
+      }};
+      // Auswahl
+      window.selectSeries = function(name){{
+        document.cookie = "bw_series=" + encodeURIComponent(name) + "; path=/";
+      }};
+      // Löschen
+      window.deleteSeries = function(name){{
+        document.cookie = "bw_delete=" + encodeURIComponent(name) + "; path=/";
+      }};
+    }})();"""
     driver.execute_script(js)
 
 
@@ -266,7 +255,7 @@ def main():
             driver.quit()
             return
 
-        # 2) Delete-Cookie?
+        # 2) Delete?
         to_del = get_cookie(driver, 'bw_delete')
         if to_del and to_del in db:
             print(f"[–] Entferne Serie „{to_del}“ aus DB.")
@@ -274,9 +263,10 @@ def main():
             with open(PROGRESS_DB_FILE, 'w') as f:
                 json.dump(db, f, indent=2)
             driver.delete_cookie('bw_delete')
-            continue  # Sidebar neu bauen
+            driver.get(START_URL)
+            continue
 
-        # 3) Auswahl-Cookie?
+        # 3) Auswahl?
         sel = get_cookie(driver, 'bw_series')
         if sel and sel in db:
             driver.delete_cookie('bw_series')
@@ -286,17 +276,16 @@ def main():
             driver.get(START_URL)
             continue
 
-        # 4) Automatische Erkennung des Streams (kein input mehr!)
+        # 4) Auto-Erkennung: Video-URL automatisch starten
         cur = driver.current_url
-        url_series, url_se, url_ep = parse_episode_info(cur)
-        if url_series:
-            # Wenn die URL stimmt, starten wir direkt
-            start_pos = db.get(url_series, {}).get('position', 0)
-            play_episodes_loop(driver, url_series, url_se, url_ep, start_pos)
+        series, season, episode = parse_episode_info(cur)
+        if series:
+            start_pos = db.get(series, {}).get('position', 0)
+            play_episodes_loop(driver, series, season, episode, start_pos)
             driver.get(START_URL)
             continue
 
-        # 5) Ansonsten warten wir kurz und prüfen erneut
+        # 5) Sonst kurz warten und neu prüfen
         time.sleep(1)
 
 if __name__ == "__main__":
