@@ -7,12 +7,13 @@ import logging
 from urllib.parse import unquote
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchWindowException
+from selenium.common.exceptions import JavascriptException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.firefox.service import Service
 
 # === CONFIGURATION ===
 HEADLESS = False
@@ -112,7 +113,15 @@ def skip_intro(driver, seconds):
     driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
 
 def get_current_position(driver):
-    return driver.execute_script("return document.querySelector('video').currentTime || 0;")
+    try:
+        # gibt 0 zurück, wenn kein <video> da ist
+        return driver.execute_script("""
+            const v = document.querySelector('video');
+            return v ? v.currentTime : 0;
+        """)
+    except JavascriptException:
+        # Falls das JS trotzdem mal komplett durchknallt
+        return 0
 
 def handle_list_item_deletion(series_name):
     name = unquote(series_name).strip()
@@ -294,6 +303,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
         # 3) Video-Frame und Start
         if not switch_to_video_frame(driver):  
+            logging.warning("No video frame found – abort playback monitor")
             break
         if not is_video_playing(driver):
             play_video(driver)
@@ -329,7 +339,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             pos = get_current_position(driver)
             save_progress(series, season, current_episode, int(pos))
 
-            # Nur ein einziges In-Place-Update via print
+            # Nur ein einziges In-Place-Update
             print(f"[>] Remaining {int(remaining)}s", end="\r", flush=True)
             if remaining <= 3:
                 print()
