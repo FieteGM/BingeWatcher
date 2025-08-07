@@ -256,13 +256,18 @@ def inject_sidebar(driver, db):
 def play_episodes_loop(driver, series, season, episode, position=0):
     current_episode = episode
 
+    # 1) Einmalig Sidebar bauen
+    db = load_progress()
+    inject_sidebar(driver, db)
+
     while True:
-        # Sicherstellen, dass wir im Haupt-Kontext sind
+        # Immer sicher ins Top‐Level‐Dokument
         try:
             driver.switch_to.default_content()
         except:
             pass
 
+        # --- DELETE per JS-Flag (global in Sidebar) ---
         series_to_delete = driver.execute_script("""
             const s = localStorage.getItem('bw_seriesToDelete');
             if (s) localStorage.removeItem('bw_seriesToDelete');
@@ -270,89 +275,84 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         """)
         if series_to_delete:
             handle_list_item_deletion(series_to_delete)
-            logging.info(f"[BingeWatcher] Deleting series '{series_to_delete}' per JS request")
-            driver.execute_script("window.seriesToDelete = null;")
+            logging.info(f"Deleting series '{series_to_delete}' per JS request")
+            # Sidebar updaten
+            db = load_progress()
+            inject_sidebar(driver, db)
             continue
 
-        # 1) Close-Button?
+        # --- QUIT ---
         if get_cookie(driver, 'bw_quit') == '1':
             driver.delete_cookie('bw_quit')
+            logging.info("Browser closed, exiting now.")
             driver.quit()
-            logging.info("[BingeWatcher] Browser closed, exiting now.")
             sys.exit(0)
 
-        # Aktuelle Daten aus der JSON laden
-        db = load_progress()
-        logging.info(f"\n[▶] Playing {series} S{season}E{current_episode}")
-
+        # 2) Zur nächsten Episode navigieren
+        logging.info(f"▶ Playing {series} S{season}E{current_episode}")
         navigate_to_episode(driver, series, season, current_episode, db)
-        inject_sidebar(driver, db)
 
-        if not switch_to_video_frame(driver):
+        # 3) Video-Frame und Start
+        if not switch_to_video_frame(driver):  
             break
-
         if not is_video_playing(driver):
             play_video(driver)
-
         skip_intro(driver, position or INTRO_SKIP_SECONDS)
         enable_fullscreen(driver)
 
-        # — Haup­tablauf während einer Folge —
+        # 4) Playback-Monitoring
         while True:
-            # noch mal sicher ins Haupt­document
             try:
                 driver.switch_to.default_content()
             except:
                 pass
 
-            # 0) Überraschungs­wechsel?
-            new_series = get_cookie(driver, 'bw_series')
-            if new_series:
+            # Wechsel Serie?
+            if get_cookie(driver, 'bw_series'):
                 driver.delete_cookie('bw_series')
                 return
 
-            # 1) Close-Button?
+            # Quit?
             if get_cookie(driver, 'bw_quit') == '1':
                 driver.delete_cookie('bw_quit')
+                logging.info("Browser closed, exiting now.")
                 driver.quit()
-                logging.info("[BingeWatcher] Browser closed, exiting now.")
                 sys.exit(0)
-            
-            # 3) Fortschritt speichern und evtl. nächste Folge
+
+            # Speicher-Fortschritt und log verbleibende Zeit
             if not switch_to_video_frame(driver):
                 break
-
             remaining = driver.execute_script("""
-                const v = document.querySelector('video');
-                if (!v) return 0;
-                return v.duration - v.currentTime;
+            const v = document.querySelector('video');
+            return v ? v.duration - v.currentTime : 0;
             """)
+            pos = get_current_position(driver)
+            save_progress(series, season, current_episode, int(pos))
 
-            current_pos = get_current_position(driver)
-            save_progress(series, season, current_episode, int(current_pos))
-
-            logging.info(f"[>] Remaining {int(remaining)}s", end="\r")
+            # Nur ein einziges In-Place-Update via print
+            print(f"[>] Remaining {int(remaining)}s", end="\r", flush=True)
             if remaining <= 3:
+                print()
                 break
             time.sleep(2)
 
-        # Ende der Folge: Vollbild schließen, Episode++ und weitermachen
+        # 5) Episode beendet → Vollbild schließen, Episode++ und weiter
         exit_fullscreen(driver)
-        time.sleep(1)
         current_episode += 1
 
+        # 6) Versuch, nächste Episode zu laden
         try:
-            navigate_to_episode(driver, series, season, current_episode, load_progress())
+            navigate_to_episode(driver, series, season, current_episode, db)
         except:
-            logging.info("[!] Next episode unavailable. Exiting.")
+            logging.info("Next episode unavailable. Exiting loop.")
             break
         time.sleep(2)
 
 # === MAIN ===
 def main():
-    logging.info("[BingeWatcher] Starting Python script…")
+    logging.info("Starting Python script…")
     driver = start_browser()
-    logging.info("[BingeWatcher] Browser started, navigating to start URL")
+    logging.info("Browser started, navigating to start URL")
     driver.get(START_URL)
 
     while True:
@@ -425,7 +425,6 @@ def main():
             logging.exception("Uncaught error, quitting")
         finally:
             driver.quit()
-            db.persist()
 
 if __name__ == "__main__":
     main()
