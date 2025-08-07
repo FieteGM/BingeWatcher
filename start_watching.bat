@@ -83,10 +83,16 @@ if not "!missing_modules!"=="" (
 
 REM === Start Python Script ===
 python s.toBot.py
+set EXITCODE=%ERRORLEVEL%
 
-pause
-
-REM === Kill Tor process (optional) ===
-taskkill /IM tor.exe /F >nul 2>&1
-
-endlocal
+REM === Cleanup and exit depending on Python exit code ===
+if %EXITCODE% EQU 0 (
+    echo [=] BingeWatcher exited normally. Cleaning up...
+    taskkill /IM tor.exe /F >nul 2>&1
+    endlocal & exit /b 0
+) else (
+    echo [X] BingeWatcher exited with code %EXITCODE%.
+    pause
+    taskkill /IM tor.exe /F >nul 2>&1
+    endlocal & exit /b %EXITCODE%
+)

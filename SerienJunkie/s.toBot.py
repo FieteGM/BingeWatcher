@@ -4,10 +4,19 @@ import sys
 import time
 import json
 import logging
+import threading
 from urllib.parse import unquote
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchWindowException
-from selenium.common.exceptions import JavascriptException
+from selenium.common.exceptions import (
+    NoSuchWindowException, 
+    JavascriptException, 
+    TimeoutException,
+    WebDriverException,
+    NoSuchElementException,
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    InvalidSessionIdException
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
@@ -18,423 +27,1015 @@ from selenium.webdriver.firefox.service import Service
 # === CONFIGURATION ===
 HEADLESS = False
 START_URL = 'https://s.to/'
-INTRO_SKIP_SECONDS = 320
+INTRO_SKIP_SECONDS = 80
+MAX_RETRIES = 3
+WAIT_TIMEOUT = 15
+PROGRESS_SAVE_INTERVAL = 5
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, 'geckodriver.exe')
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, 'progress.json')
+
+# Global state
+current_series = None
+current_season = None
+current_episode = None
+is_playing = False
+should_quit = False
 
 logging.basicConfig(
     format='[BingeWatcher] %(levelname)s: %(message)s',
     level=logging.INFO
 )
 
+class BingeWatcherError(Exception):
+    """Custom exception for BingeWatcher errors"""
+    pass
+
 # === BROWSER SETUP ===
 def start_browser():
-    profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
-    options = webdriver.FirefoxOptions()
-    options.set_preference("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0")
-    if HEADLESS:
-        options.add_argument("--headless")
-    service = Service(executable_path=GECKO_DRIVER_PATH)
-    options.profile = profile_path
-    driver = webdriver.Firefox(service=service, options=options)
-    return driver
+    """Initialize and start the Firefox browser with proper error handling"""
+    try:
+        profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
+        
+        # Ensure profile directory exists
+        if not os.path.exists(profile_path):
+            os.makedirs(profile_path, exist_ok=True)
+        
+        # Additional preferences for better stability
+        options = webdriver.FirefoxOptions()
+        options.set_preference("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0")
+        # Allow scripts to close windows and suppress close/quit warnings
+        options.set_preference("dom.allow_scripts_to_close_windows", True)
+        options.set_preference("browser.tabs.warnOnClose", False)
+        options.set_preference("browser.tabs.warnOnCloseOtherTabs", False)
+        options.set_preference("browser.warnOnQuit", False)
+        options.set_preference("browser.sessionstore.warnOnQuit", False)
+        
+        # Set the profile directory using the modern approach
+        options.set_preference("profile", profile_path)
+        options.profile = profile_path
+        
+        if HEADLESS:
+            options.add_argument("--headless")
+        
+        # Check if geckodriver exists
+        if not os.path.exists(GECKO_DRIVER_PATH):
+            raise BingeWatcherError(f"Geckodriver not found at {GECKO_DRIVER_PATH}")
+        
+        service = Service(executable_path=GECKO_DRIVER_PATH)
+        driver = webdriver.Firefox(service=service, options=options)
+        
+        # Set window size for consistency
+        driver.set_window_size(1920, 1080)
+        
+        logging.info(f"Browser started with profile: {profile_path}")
+        return driver
+    except Exception as e:
+        logging.error(f"Failed to start browser: {e}")
+        raise BingeWatcherError(f"Browser startup failed: {e}")
+
+def safe_navigate(driver, url, max_retries=MAX_RETRIES):
+    """Safely navigate to a URL with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            driver.get(url)
+            return True
+        except WebDriverException as e:
+            if attempt == max_retries - 1:
+                logging.error(f"Failed to navigate to {url} after {max_retries} attempts: {e}")
+                return False
+            logging.warning(f"Navigation attempt {attempt + 1} failed, retrying...")
+            time.sleep(2)
+    return False
 
 def navigate_to_episode(driver, series, season, episode, db):
-    next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
-    driver.get(next_url)
-    WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
+    """Navigate to a specific episode with proper error handling"""
+    url = f"{START_URL}serie/stream/{series}/staffel-{season}/episode-{episode}"
+    
+    if not safe_navigate(driver, url):
+        raise BingeWatcherError(f"Failed to navigate to episode {series} S{season}E{episode}")
+    
+    # Wait for page to load and stabilize
+    try:
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        # Additional wait for dynamic content
+        time.sleep(3)
+    except TimeoutException:
+        logging.warning("Page load timeout, continuing anyway")
+    
+    # Verify we're on the correct episode
+    try:
+        current_url = driver.current_url
+        if f"episode-{episode}" not in current_url:
+            logging.warning(f"Navigation may have failed, expected episode-{episode} in URL, got: {current_url}")
+            # Check if we were redirected to a different page
+            if "login" in current_url.lower() or "error" in current_url.lower():
+                logging.error("Page redirected to login or error page")
+                return False
+    except Exception as e:
+        logging.warning(f"Could not verify URL: {e}")
+    
+    # Wait a bit more for any dynamic content to load
+    time.sleep(2)
+    
     inject_sidebar(driver, db)
+    return True
 
 def parse_episode_info(url):
-    match = re.search(r'/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)', url)
-    if match:
-        return match.group(1), int(match.group(2)), int(match.group(3))
-    return None, None, None
+    """Parse episode information from URL with improved regex"""
+    try:
+        m = re.search(r'/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)', url)
+        if m:
+            return (m.group(1), int(m.group(2)), int(m.group(3)))
+    except (ValueError, AttributeError) as e:
+        logging.warning(f"Failed to parse episode info from URL {url}: {e}")
+    return (None, None, None)
 
 def get_cookie(driver, name):
+    """Get cookie value with improved error handling"""
     try:
-        # normaler Zugriff
-        for c in driver.get_cookies():
-            if c['name'] == name:
-                return c['value']
-    except NoSuchWindowException:
-        # Context verloren → zurück zum Hauptdokument, noch mal probieren
+        cookies = driver.get_cookies()
+        for cookie in cookies:
+            if cookie.get('name') == name:
+                return cookie.get('value')
+    except (NoSuchWindowException, WebDriverException) as e:
+        logging.warning(f"Failed to get cookie {name}: {e}")
         try:
             driver.switch_to.default_content()
-            for c in driver.get_cookies():
-                if c['name'] == name:
-                    return c['value']
+            cookies = driver.get_cookies()
+            for cookie in cookies:
+                if cookie.get('name') == name:
+                    return cookie.get('value')
         except Exception:
             pass
     return None
 
-# === UTILITY FUNCTIONS ===
-def enable_fullscreen(driver):
-    driver.execute_script("""
-        const video = document.querySelector('video');
-        if (video.requestFullscreen) video.requestFullscreen();
-        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-    """)
-
-def exit_fullscreen(driver):
+def set_cookie(driver, name, value, path="/"):
+    """Set cookie with error handling"""
     try:
-        driver.switch_to.default_content()
-        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        time.sleep(0.5)
-    except:
-        pass
-
-def switch_to_video_frame(driver):
-    try:
-        iframe = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
-        driver.switch_to.frame(iframe)
+        driver.add_cookie({'name': name, 'value': value, 'path': path})
         return True
-    except:
-        logging.info("[!] Video iframe not found.")
+    except Exception as e:
+        logging.warning(f"Failed to set cookie {name}: {e}")
         return False
 
-def play_video(driver):
+def delete_cookie(driver, name):
+    """Delete cookie with error handling"""
     try:
-        video = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "video")))
-        ActionChains(driver).move_to_element(video).click().perform()
+        driver.delete_cookie(name)
+        return True
     except Exception as e:
-        logging.critical(f"[!] Could not start video: {e}")
+        logging.warning(f"Failed to delete cookie {name}: {e}")
+        return False
+
+# === VIDEO UTILITIES ===
+def enable_fullscreen(driver):
+    """Enable fullscreen mode, trying current context first, then iframes."""
+    try:
+        def _request_fullscreen() -> str:
+            return driver.execute_script(
+                """
+                const v = document.querySelector('video');
+                if (!v) return 'NOVIDEO';
+                try {
+                    if (v.requestFullscreen) { v.requestFullscreen(); return 'OK'; }
+                    if (v.webkitRequestFullscreen) { v.webkitRequestFullscreen(); return 'OK'; }
+                } catch (e) {
+                    return 'ERR';
+                }
+                return 'NOSUP';
+                """
+            )
+
+        # Try in current context (ideally already inside the iframe)
+        result = _request_fullscreen()
+        if result == 'OK':
+            logging.info("Fullscreen enabled")
+            return True
+
+        # Try across iframes
+        driver.switch_to.default_content()
+        for iframe in driver.find_elements(By.TAG_NAME, 'iframe'):
+            try:
+                driver.switch_to.frame(iframe)
+                result = _request_fullscreen()
+                if result == 'OK':
+                    logging.info("Fullscreen enabled (via iframe)")
+                    return True
+            except Exception:
+                pass
+            finally:
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+
+        logging.warning("No video element found for fullscreen")
+        return False
+    except Exception as e:
+        logging.warning(f"Failed to enable fullscreen: {e}")
+        return False
+
+def exit_fullscreen(driver):
+    """Exit fullscreen mode safely"""
+    try:
+        driver.switch_to.default_content()
+        # Try multiple exit methods
+        exit_script = """
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+            document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+            document.msExitFullscreen();
+        }
+        """
+        driver.execute_script(exit_script)
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        time.sleep(0.5)
+    except Exception as e:
+        logging.warning(f"Failed to exit fullscreen: {e}")
+
+def switch_to_video_frame(driver, timeout=WAIT_TIMEOUT):
+    """Switch to video iframe with improved detection and error recovery"""
+    try:
+        # First, ensure we're on the main page
+        driver.switch_to.default_content()
+        
+        # Wait a moment for page to stabilize
+        time.sleep(2)
+        
+        # Check if we're still on a valid page
+        try:
+            current_url = driver.current_url
+            if not current_url or current_url == "about:blank":
+                logging.warning("Browser lost connection or page is blank")
+                return False
+        except Exception:
+            logging.warning("Cannot get current URL, browser may be disconnected")
+            return False
+        
+        # Wait for iframe to be present
+        try:
+            iframe = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.TAG_NAME, "iframe"))
+            )
+        except TimeoutException:
+            logging.warning("No iframe found within timeout period")
+            return False
+        
+        # Switch to iframe
+        try:
+            driver.switch_to.frame(iframe)
+        except Exception as e:
+            logging.warning(f"Failed to switch to iframe: {e}")
+            return False
+        
+        # Verify video element exists
+        try:
+            video = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.TAG_NAME, "video"))
+            )
+        except TimeoutException:
+            logging.warning("No video element found in iframe")
+            return False
+        
+        return True
+        
+    except Exception as e:
+        logging.warning(f"Failed to switch to video frame: {e}")
+        # Try to recover by switching back to default content
+        try:
+            driver.switch_to.default_content()
+        except:
+            pass
+        return False
+
+def play_video(driver, max_retries=3):
+    """Start video playback with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            driver.switch_to.default_content()
+            if not switch_to_video_frame(driver):
+                return False
+            
+            # Wait for video to be clickable
+            video = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.TAG_NAME, "video"))
+            )
+            
+            # Try multiple click methods
+            try:
+                video.click()
+            except ElementClickInterceptedException:
+                ActionChains(driver).move_to_element(video).click().perform()
+            
+            # Verify video is playing
+            time.sleep(1)
+            if is_video_playing(driver):
+                logging.info("Video started successfully")
+                return True
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logging.error(f"Failed to start video after {max_retries} attempts: {e}")
+                return False
+            logging.warning(f"Video start attempt {attempt + 1} failed, retrying...")
+            time.sleep(2)
+    
+    return False
 
 def is_video_playing(driver):
-    return driver.execute_script("""
-        const video = document.querySelector('video');
-        return video && !video.paused && video.readyState > 2;
-    """)
+    """Check if video is currently playing"""
+    try:
+        return driver.execute_script("""
+            const v = document.querySelector('video');
+            return v && !v.paused && v.readyState >= 2 && v.currentTime > 0;
+        """)
+    except Exception:
+        return False
 
 def skip_intro(driver, seconds):
-    WebDriverWait(driver, 15).until(lambda d: d.execute_script("return document.querySelector('video')?.readyState > 0;"))
-    driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+    """Skip intro with proper video state checking"""
+    try:
+        # Wait for video to be ready
+        WebDriverWait(driver, 15).until(lambda d: d.execute_script(
+            "return document.querySelector('video')?.readyState >= 2;"))
+        
+        # Set current time
+        driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+        logging.info(f"Skipped to {seconds}s")
+    except Exception as e:
+        logging.warning(f"Failed to skip intro: {e}")
 
 def get_current_position(driver):
+    """Get current video position with error handling"""
     try:
-        # gibt 0 zurück, wenn kein <video> da ist
         return driver.execute_script("""
             const v = document.querySelector('video');
             return v ? v.currentTime : 0;
         """)
-    except JavascriptException:
-        # Falls das JS trotzdem mal komplett durchknallt
+    except Exception:
         return 0
 
-def handle_list_item_deletion(series_name):
-    name = unquote(series_name).strip()
-    db = load_progress()
-    if name in db:
-        del db[name]
-        with open(PROGRESS_DB_FILE, 'w') as f:
-            json.dump(db, f, indent=2)
+def get_video_duration(driver):
+    """Get video duration with error handling"""
+    try:
+        return driver.execute_script("""
+            const v = document.querySelector('video');
+            return v ? v.duration : 0;
+        """)
+    except Exception:
+        return 0
+
+def get_remaining_time(driver):
+    """Get remaining video time with error handling"""
+    try:
+        return driver.execute_script("""
+            const v = document.querySelector('video');
+            if (!v) return 0;
+            return v.duration - v.currentTime;
+        """)
+    except Exception:
+        return 0
+
+def is_browser_responsive(driver):
+    """Check if browser is still responsive and connected"""
+    try:
+        # Try to get current URL as a simple test
+        current_url = driver.current_url
+        return current_url is not None and current_url != "about:blank"
+    except Exception:
+        return False
+
+def refresh_page_if_needed(driver, series, season, episode):
+    """Refresh the page if browser seems unresponsive"""
+    try:
+        if not is_browser_responsive(driver):
+            logging.info("Browser unresponsive, attempting to refresh page")
+            driver.refresh()
+            time.sleep(5)  # Wait for page to reload
+            return True
+    except Exception as e:
+        logging.warning(f"Failed to refresh page: {e}")
+    return False
 
 # === PROGRESS MANAGEMENT ===
 def save_progress(series, season, episode, position):
-    db = {}
-    if os.path.exists(PROGRESS_DB_FILE):
-        with open(PROGRESS_DB_FILE, 'r') as f:
-            db = json.load(f)
-    db[series] = {"season": season, "episode": episode, "position": position}
-    with open(PROGRESS_DB_FILE, 'w') as f:
-        json.dump(db, f, indent=2)
+    """Save progress with atomic write and backup"""
+    try:
+        db = load_progress()
+        db[series] = {
+            "season": season, 
+            "episode": episode, 
+            "position": position,
+            "timestamp": time.time()
+        }
+        
+        # Create backup
+        backup_file = PROGRESS_DB_FILE + '.backup'
+        if os.path.exists(PROGRESS_DB_FILE):
+            import shutil
+            shutil.copy2(PROGRESS_DB_FILE, backup_file)
+        
+        # Write new data
+        with open(PROGRESS_DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save progress: {e}")
+        return False
 
 def load_progress():
-    if os.path.exists(PROGRESS_DB_FILE):
-        with open(PROGRESS_DB_FILE, 'r') as f:
-            try:
+    """Load progress with error recovery"""
+    try:
+        if os.path.exists(PROGRESS_DB_FILE):
+            with open(PROGRESS_DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
-            except Exception as e:
-                logging.critical("[!] Corrupt progress DB:", e)
-    return {}
-
-# === CORE FUNCTIONS ===
-def inject_sidebar(driver, db):
-    # Immer erst aus allen iframes raus
-    driver.switch_to.default_content()
-
-    # 1) List‐Items bauen
-    entries = []
-    for series, data in db.items():
-        safe = series
-        entries.append(f'''
-            <li data-series="{safe}"
-                data-season="{data["season"]}"
-                data-episode="{data["episode"]}"
-                style="display:flex;justify-content:space-between;
-                    padding:8px 12px;cursor:pointer;
-                    border-bottom:1px solid #444;">
-            <span class="bw-select">
-                <b>{series}</b> S{data["season"]}E{data["episode"]}
-                <small style="color:#aaa;">@ {data["position"]}s</small>
-            </span>
-            <span class="bw-delete" data-series="{safe}"
-                    style="color:#a33;cursor:pointer;font-weight:700;">
-                ✕
-            </span>
-            </li>
-        ''')
-    inner_ul = "\n".join(entries)
-
-    # 2) Sidebar injizieren
-    js = f"""
-    (function() {{
-      console.log('[BingeWatcher] Rebuilding sidebar…');
-      let old = document.getElementById('bingeSidebar');
-      if (old) old.remove();
-
-      // neues Sidebar
-      let d = document.createElement('div');
-      d.id = 'bingeSidebar';
-      Object.assign(d.style, {{
-        position: 'fixed',
-        left: '0', top: '0',
-        width: '260px', height: '100vh',
-        background: '#222', color: '#eee',
-        fontFamily: 'Segoe UI,Arial,sans-serif',
-        boxShadow: '2px 0 16px #000a',
-        overflowY: 'auto',
-        pointerEvents: 'auto',
-        zIndex: '2147483647'
-      }});
-      d.innerHTML = `
-        <div style="display:flex;justify-content:space-between;
-                    align-items:center;padding:10px;
-                    border-bottom:1px solid #444;">
-          <button id="bwSkip">Skip ▶</button>
-          <span style="font-size:16px;font-weight:700;">BingeWatcher</span>
-          <button id="bwQuit">Close ✕</button>
-        </div>
-        <ul style="list-style:none;margin:0;padding:0;">
-          {inner_ul}
-        </ul>
-      `;
-      console.log('[BingeWatcher] Sidebar injected with {len(db)} entries');
-      document.documentElement.appendChild(d);
-
-      // Event-Delegation
-      d.addEventListener('click', e => {{
-        const tgt = e.target;
-
-        console.log('[BingeWatcher] Click on', tgt.id || tgt.className);
-
-        // Skip-Button
-        if (tgt.id === 'bwSkip') {{
-          console.log('[BingeWatcher] Skip pressed');
-          const v = document.querySelector('video');
-          if (v) v.currentTime = v.duration - 1;
-          return;
-        }}
-
-        // Close-Button
-        if (tgt.id === 'bwQuit') {{
-          console.log('[BingeWatcher] Close pressed');
-          document.cookie = 'bw_quit=1; path=/';
-          window.top.close();
-          return;
-        }}
-
-        // Delete-Icon
-        if (tgt.classList.contains('bw-delete')) {{
-          console.log('[BingeWatcher] Delete pressed for series', tgt.dataset.series);
-          e.stopPropagation();
-          localStorage.setItem('bw_seriesToDelete', tgt.dataset.series.trim());
-          location.reload();
-          return;
-        }}
-
-        // Auswahl der Serie (Zeile)
-        const sel = tgt.closest('.bw-select');
-        if (sel) {{
-          console.log('[BingeWatcher] Jump to', sel.dataset.series, 'S'+sel.dataset.season+'E'+sel.dataset.episode);
-          const li = sel.parentElement;
-          const s = li.dataset.series;
-          const se = li.dataset.season;
-          const ep = li.dataset.episode;
-          location.href = `/serie/stream/${{s}}/staffel-${{se}}/episode-${{ep}}`;
-        }}
-      }});
-    }})();
-    """
-    driver.execute_script(js)
-
-def play_episodes_loop(driver, series, season, episode, position=0):
-    current_episode = episode
-
-    # 1) Einmalig Sidebar bauen
-    db = load_progress()
-    inject_sidebar(driver, db)
-
-    while True:
-        # Immer sicher ins Top‐Level‐Dokument
-        try:
-            driver.switch_to.default_content()
-        except:
-            pass
-
-        # --- DELETE per JS-Flag (global in Sidebar) ---
-        series_to_delete = driver.execute_script("""
-            const s = localStorage.getItem('bw_seriesToDelete');
-            if (s) localStorage.removeItem('bw_seriesToDelete');
-            return s;
-        """)
-        if series_to_delete:
-            handle_list_item_deletion(series_to_delete)
-            logging.info(f"Deleting series '{series_to_delete}' per JS request")
-            # Sidebar updaten
-            db = load_progress()
-            inject_sidebar(driver, db)
-            continue
-
-        # --- QUIT ---
-        if get_cookie(driver, 'bw_quit') == '1':
-            driver.delete_cookie('bw_quit')
-            logging.info("Browser closed, exiting now.")
-            driver.quit()
-            sys.exit(0)
-
-        # 2) Zur nächsten Episode navigieren
-        logging.info(f"▶ Playing {series} S{season}E{current_episode}")
-        navigate_to_episode(driver, series, season, current_episode, db)
-
-        # 3) Video-Frame und Start
-        if not switch_to_video_frame(driver):  
-            logging.warning("No video frame found – abort playback monitor")
-            break
-        if not is_video_playing(driver):
-            play_video(driver)
-        skip_intro(driver, position or INTRO_SKIP_SECONDS)
-        enable_fullscreen(driver)
-
-        # 4) Playback-Monitoring
-        while True:
+                else:
+                    logging.warning("Progress file is not a dictionary, using empty dict")
+        return {}
+    except json.JSONDecodeError as e:
+        logging.error(f"Corrupt progress file: {e}")
+        # Try to restore from backup
+        backup_file = PROGRESS_DB_FILE + '.backup'
+        if os.path.exists(backup_file):
             try:
-                driver.switch_to.default_content()
-            except:
+                with open(backup_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        logging.info("Restored progress from backup")
+                        return data
+            except Exception:
                 pass
+        return {}
+    except Exception as e:
+        logging.error(f"Failed to load progress: {e}")
+        return {}
 
-            # Wechsel Serie?
-            if get_cookie(driver, 'bw_series'):
-                driver.delete_cookie('bw_series')
-                return
+def handle_list_item_deletion(name):
+    """Handle series deletion from progress"""
+    try:
+        db = load_progress()
+        if name in db:
+            del db[name]
+            with open(PROGRESS_DB_FILE, 'w', encoding='utf-8') as f:
+                json.dump(db, f, indent=2, ensure_ascii=False)
+            logging.info(f"Deleted series: {name}")
+            return True
+    except Exception as e:
+        logging.error(f"Failed to delete series {name}: {e}")
+    return False
 
-            # Quit?
-            if get_cookie(driver, 'bw_quit') == '1':
-                driver.delete_cookie('bw_quit')
-                logging.info("Browser closed, exiting now.")
-                driver.quit()
-                sys.exit(0)
+# === SIDEBAR MANAGEMENT ===
+def inject_sidebar(driver, db):
+    """Inject the sidebar with futuristic Next UI design"""
+    try:
+        driver.switch_to.default_content()
+        
+        # Create items HTML with modern design
+        items = []
+        for series_name, data in db.items():
+            try:
+                # Calculate progress percentage
+                duration = 1200
+                position = data.get('position', 0)
+                progress_percent = min((position / duration) * 100, 100)
+                
+                items.append(f'''
+                    <div class="bw-series-item" data-series="{series_name}" data-season="{data.get('season', 1)}" data-episode="{data.get('episode', 1)}"
+                         style="margin: 8px; padding: 16px; background: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
+                                border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; cursor: pointer;
+                                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                                backdrop-filter: blur(10px); position: relative; overflow: hidden;">
+                        
+                        <!-- Glow effect -->
+                        <div style="position: absolute; top: 0; left: 0; right: 0; height: 1px; 
+                                   background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);"></div>
+                        
+                        <!-- Progress bar -->
+                        <div style="position: absolute; bottom: 0; left: 0; height: 2px; width: {progress_percent}%; 
+                                   background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 0 0 12px 12px;"></div>
+                        
+                        <div class="bw-select" style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;">
+                                <div style="font-weight: 600; font-size: 14px; color: #f8fafc; margin-bottom: 4px; 
+                                           text-shadow: 0 1px 2px rgba(0,0,0,0.3);">{series_name}</div>
+                                <div style="font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px;">
+                                    <span style="background: rgba(59, 130, 246, 0.2); padding: 2px 6px; border-radius: 4px; 
+                                               border: 1px solid rgba(59, 130, 246, 0.3);">S{data.get('season', 1)}E{data.get('episode', 1)}</span>
+                                    <span style="opacity: 0.7;">{data.get('position', 0)}s</span>
+                                </div>
+                            </div>
+                            <div class="bw-delete" data-series="{series_name}" 
+                                 style="color: #ef4444; cursor: pointer; padding: 6px; border-radius: 6px;
+                                        background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2);
+                                        transition: all 0.2s; font-size: 12px; font-weight: 500;">✕</div>
+                        </div>
+                    </div>
+                ''')
+            except Exception as e:
+                logging.warning(f"Failed to create item for {series_name}: {e}")
+        
+        items_html = "\n".join(items)
+        
+        # Modern JavaScript with Next UI styling
+        js = f"""
+        (function() {{
+            try {{
+                // Remove existing sidebar
+                let old = document.getElementById('bingeSidebar');
+                if (old) old.remove();
+                
+                // Create new sidebar
+                let d = document.createElement('div');
+                d.id = 'bingeSidebar';
+                Object.assign(d.style, {{
+                    position: 'fixed',
+                    left: 0,
+                    top: 0,
+                    width: '320px',
+                    height: '100vh',
+                    background: 'linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%)',
+                    color: '#f8fafc',
+                    overflowY: 'auto',
+                    zIndex: 2147483647,
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.05)',
+                    borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    WebkitBackdropFilter: 'blur(20px)'
+                }});
+                
+                d.innerHTML = `
+                    <!-- Header -->
+                    <div style="padding: 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
+                               background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div style="width: 8px; height: 8px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); 
+                                           border-radius: 50%; animation: pulse 2s infinite;"></div>
+                                <span style="font-weight: 700; font-size: 18px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); 
+                                           -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+                                           background-clip: text;">BingeWatcher</span>
+                            </div>
+                            <button id="bwQuit" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);
+                                                      padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 500;
+                                                      transition: all 0.2s; backdrop-filter: blur(10px);">Close</button>
+                        </div>
+                        
+                        <!-- Control buttons -->
+                        <div style="display: flex; gap: 8px;">
+                            <button id="bwSkip" style="flex: 1; background: linear-gradient(135deg, #10b981, #059669); 
+                                                      color: white; border: none; padding: 10px 16px; border-radius: 8px; 
+                                                      cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s;
+                                                      box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2);">Skip to End</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Series list -->
+                    <div style="padding: 16px;">
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; 
+                                   letter-spacing: 0.5px; font-weight: 600;">Your Series</div>
+                        <div style="display: flex; flex-direction: column; gap: 4px;">{items_html}</div>
+                    </div>
+                    
+                    <!-- CSS Animations -->
+                    <style>
+                        @keyframes pulse {{
+                            0%, 100% {{ opacity: 1; }}
+                            50% {{ opacity: 0.5; }}
+                        }}
+                        
+                        #bingeSidebar::-webkit-scrollbar {{
+                            width: 6px;
+                        }}
+                        
+                        #bingeSidebar::-webkit-scrollbar-track {{
+                            background: rgba(255, 255, 255, 0.05);
+                        }}
+                        
+                        #bingeSidebar::-webkit-scrollbar-thumb {{
+                            background: rgba(255, 255, 255, 0.2);
+                            border-radius: 3px;
+                        }}
+                        
+                        #bingeSidebar::-webkit-scrollbar-thumb:hover {{
+                            background: rgba(255, 255, 255, 0.3);
+                        }}
+                    </style>
+                `;
+                
+                document.documentElement.appendChild(d);
+                
+                // Event handling with improved interactions
+                d.addEventListener('click', function(e) {{
+                    try {{
+                        if (e.target.id === 'bwSkip') {{
+                            let v = document.querySelector('video');
+                            if (v && v.duration) {{
+                                v.currentTime = v.duration - 1;
+                                console.log('Skipped to end');
+                            }}
+                            return;
+                        }}
+                        
+                        if (e.target.id === 'bwQuit') {{
+                            document.cookie = 'bw_quit=1;path=/;max-age=3600';
+                            try {{ window.top.close(); }} catch (e) {{}}
+                            setTimeout(() => {{ location.href = 'about:blank'; }}, 100);
+                            return;
+                        }}
+                        
+                        if (e.target.classList.contains('bw-delete')) {{
+                            let series = e.target.dataset.series;
+                            if (series) {{
+                                localStorage.setItem('bw_seriesToDelete', series);
+                                location.reload();
+                            }}
+                            return;
+                        }}
+                        
+                        let sel = e.target.closest('.bw-select');
+                        if (sel) {{
+                            let li = sel.parentElement;
+                            if (li.dataset.series && li.dataset.season && li.dataset.episode) {{
+                                let url = `/serie/stream/${{li.dataset.series}}/staffel-${{li.dataset.season}}/episode-${{li.dataset.episode}}`;
+                                location.href = url;
+                            }}
+                        }}
+                    }} catch (err) {{
+                        console.error('Sidebar click error:', err);
+                    }}
+                }});
+                
+                // Enhanced hover effects
+                d.addEventListener('mouseover', function(e) {{
+                    if (e.target.classList.contains('bw-series-item')) {{
+                        e.target.style.transform = 'translateY(-2px)';
+                        e.target.style.boxShadow = '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)';
+                        e.target.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+                    }}
+                    if (e.target.classList.contains('bw-delete')) {{
+                        e.target.style.background = 'rgba(239, 68, 68, 0.2)';
+                        e.target.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                    }}
+                }});
+                
+                d.addEventListener('mouseout', function(e) {{
+                    if (e.target.classList.contains('bw-series-item')) {{
+                        e.target.style.transform = 'translateY(0)';
+                        e.target.style.boxShadow = 'none';
+                        e.target.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                    }}
+                    if (e.target.classList.contains('bw-delete')) {{
+                        e.target.style.background = 'rgba(239, 68, 68, 0.1)';
+                        e.target.style.borderColor = 'rgba(239, 68, 68, 0.2)';
+                    }}
+                }});
+                
+            }} catch (err) {{
+                console.error('Sidebar injection error:', err);
+            }}
+        }})();
+        """
+        
+        driver.execute_script(js)
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to inject sidebar: {e}")
+        return False
 
-            # Speicher-Fortschritt und log verbleibende Zeit
-            if not switch_to_video_frame(driver):
-                break
-            remaining = driver.execute_script("""
-            const v = document.querySelector('video');
-            return v ? v.duration - v.currentTime : 0;
-            """)
-            pos = get_current_position(driver)
-            save_progress(series, season, current_episode, int(pos))
-
-            # Nur ein einziges In-Place-Update
-            print(f"[>] Remaining {int(remaining)}s", end="\r", flush=True)
-            if remaining <= 3:
-                print()
-                break
-            time.sleep(2)
-
-        # 5) Episode beendet → Vollbild schließen, Episode++ und weiter
-        exit_fullscreen(driver)
-        current_episode += 1
-
-        # 6) Versuch, nächste Episode zu laden
-        try:
-            navigate_to_episode(driver, series, season, current_episode, db)
-        except:
-            logging.info("Next episode unavailable. Exiting loop.")
-            break
-        time.sleep(2)
-
-# === MAIN ===
-def main():
-    logging.info("Starting Python script…")
-    driver = start_browser()
-    logging.info("Browser started, navigating to start URL")
-    driver.get(START_URL)
-
-    while True:
-        # 1) Sicher ins Haupt‐Dokument
-        try:
+# === PLAYBACK LOOP ===
+def play_episodes_loop(driver, series, season, episode, position=0):
+    """Main playback loop with improved error handling and state management"""
+    global current_series, current_season, current_episode, is_playing, should_quit
+    
+    current_series, current_season, current_episode = series, season, episode
+    is_playing = True
+    current = episode
+    
+    db = load_progress()
+    last_save_time = time.time()
+    
+    logging.info(f"Starting playback loop for {series} S{season}E{episode}")
+    
+    try:
+        while is_playing and not should_quit:
             driver.switch_to.default_content()
-        except:
-            pass
-
-        try:
-            db = load_progress()
-            inject_sidebar(driver, db)
-            logging.info(f"Injected sidebar with {len(db)} entries")
-
-            while True:
-                driver.switch_to.default_content()
-
-                # --- UI-Aktionen (Delete / Select / Quit) ---
-                # 2a) Delete per JS-Flag?
-                series_to_delete = driver.execute_script("""
-                    const s = localStorage.getItem('bw_seriesToDelete');
+            
+            # Check for manual navigation
+            try:
+                ser, se, ep = parse_episode_info(driver.current_url)
+                if ser and (ser != current_series or se != current_season or ep != current):
+                    logging.info(f"Manual navigation detected: {ser} S{se}E{ep}")
+                    current_series, current_season, current_episode = ser, se, ep
+                    current = ep
+                    position = load_progress().get(ser, {}).get('position', 0)
+                    inject_sidebar(driver, load_progress())
+            except Exception as e:
+                logging.warning(f"Failed to check navigation: {e}")
+            
+            # Check quit signal
+            if get_cookie(driver, 'bw_quit') == '1':
+                delete_cookie(driver, 'bw_quit')
+                logging.info("Quit signal received, closing browser")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                sys.exit(0)
+            
+            # Check for series deletion
+            try:
+                tod = driver.execute_script("""
+                    let s = localStorage.getItem('bw_seriesToDelete');
                     if (s) localStorage.removeItem('bw_seriesToDelete');
                     return s;
                 """)
-                if series_to_delete:
-                    handle_list_item_deletion(series_to_delete)
-                    logging.info(f"Deleted series '{series_to_delete}'")
-                    # nur hier neu laden und Sidebar injizieren
-                    db = load_progress()
-                    inject_sidebar(driver, db)
+                if tod:
+                    handle_list_item_deletion(tod)
+                    inject_sidebar(driver, load_progress())
                     continue
+            except Exception as e:
+                logging.warning(f"Failed to check for deletion: {e}")
+            
+            # Load episode
+            logging.info(f"▶ Playing {current_series} S{current_season}E{current}")
+            
+            # Check if browser is responsive before navigation
+            if not is_browser_responsive(driver):
+                logging.warning("Browser not responsive, attempting recovery")
+                if not refresh_page_if_needed(driver, current_series, current_season, current):
+                    logging.error("Failed to recover browser, ending playback")
+                    break
+            
+            try:
+                if not navigate_to_episode(driver, current_series, current_season, current, db):
+                    logging.error("Navigation failed, ending playback")
+                    break
+            except Exception as e:
+                logging.error(f"Failed to navigate to episode: {e}")
+                break
+            
+            # Check for video iframe with retry
+            iframe_found = False
+            for attempt in range(3):
+                if switch_to_video_frame(driver):
+                    iframe_found = True
+                    break
+                else:
+                    logging.warning(f"Iframe not found, attempt {attempt + 1}/3")
+                    time.sleep(2)
+            
+            if not iframe_found:
+                logging.info("No video iframe found after retries, ending playback")
+                break
+            
+            # Start video
+            if not is_video_playing(driver):
+                if not play_video(driver):
+                    logging.error("Failed to start video")
+                    break
+            
+            time.sleep(1)
+            
+            # Enable fullscreen
+            enable_fullscreen(driver)
+            
+            # Skip intro if video is long enough
+            try:
+                duration = get_video_duration(driver)
+                if duration > INTRO_SKIP_SECONDS:
+                    skip_intro(driver, INTRO_SKIP_SECONDS)
+            except Exception as e:
+                logging.warning(f"Failed to skip intro: {e}")
+            
+            # Playback monitoring loop
+            playback_start_time = time.time()
+            not_playing_streak = 0
+            while is_playing and not should_quit:
+                try:
+                    driver.switch_to.default_content()
+                    
+                    # Check for navigation changes during playback
+                    ser2, se2, ep2 = parse_episode_info(driver.current_url)
+                    if ser2 and (ser2 != current_series or se2 != current_season or ep2 != current):
+                        logging.info(f"Navigation change during playback: {ser2} S{se2}E{ep2}")
+                        break
+                    
+                    # Check quit signals
+                    if get_cookie(driver, 'bw_quit') == '1':
+                        delete_cookie(driver, 'bw_quit')
+                        logging.info("Quit signal received during playback, closing browser")
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        sys.exit(0)
+                    
+                    if get_cookie(driver, 'bw_series'):
+                        delete_cookie(driver, 'bw_series')
+                        return
+                    
+                    # Switch to video frame
+                    if not switch_to_video_frame(driver):
+                        logging.info("Lost video frame during playback")
+                        break
 
-                # 2b) Quit?
-                if get_cookie(driver, 'bw_quit') == '1':
-                    driver.delete_cookie('bw_quit')
-                    logging.info("Quit-Flag gefunden, beende Browser")
-                    driver.quit()
-                    sys.exit(0)
+                    # Read detailed video state
+                    state = driver.execute_script(
+                        """
+                        const v = document.querySelector('video');
+                        if (!v) return { paused: true, ended: false, currentTime: 0, duration: 0, readyState: 0 };
+                        return {
+                            paused: !!v.paused,
+                            ended: !!v.ended,
+                            currentTime: v.currentTime || 0,
+                            duration: v.duration || 0,
+                            readyState: v.readyState || 0
+                        };
+                        """
+                    )
 
-                # 2c) Auswahl einer Serie?
-                sel = get_cookie(driver, 'bw_series')
-                if sel and sel in db:
-                    driver.delete_cookie('bw_series')
-                    logging.info(f"User selected series '{sel}'")
-                    # beim Navigieren in den Play-Loop musst du nicht die Sidebar updaten
-                    play_url = f"{START_URL}serie/stream/{sel}/staffel-{db[sel]['season']}/episode-{db[sel]['episode']}"
-                    driver.get(play_url)
-                    play_episodes_loop(driver, sel, db[sel]['season'], db[sel]['episode'], db[sel]['position'])
-                    # nach Rückkehr: Seite neu laden, Sidebar neu injizieren
-                    driver.get(START_URL)
-                    db = load_progress()
-                    inject_sidebar(driver, db)
-                    continue
+                    rem = max(0, (state.get('duration') or 0) - (state.get('currentTime') or 0))
 
-                # --- Autoplay-Erkennung (wenn du schon auf einer Episode-Seite bist) ---
-                ser, se, ep = parse_episode_info(driver.current_url)
-                if ser:
-                    logging.info(f"Detected stream page: {ser} S{se}E{ep}")
-                    pos = db.get(ser, {}).get('position', 0)
-                    play_episodes_loop(driver, ser, se, ep, pos)
-                    # nach Ende wieder ins Menü
-                    driver.get(START_URL)
-                    db = load_progress()
-                    inject_sidebar(driver, db)
-                    continue
+                    # Get current position and save progress
+                    pos = int(state.get('currentTime') or 0)
+                    current_time = time.time()
+                    
+                    if current_time - last_save_time >= PROGRESS_SAVE_INTERVAL:
+                        save_progress(current_series, current_season, current, pos)
+                        last_save_time = current_time
+                    
+                    # Display progress
+                    print(f"[>] {current_series} S{current_season}E{current} - Remaining: {int(rem)}s", end="\r", flush=True)
+                    
+                    # Check if episode is ending
+                    if rem <= 3 or state.get('ended'):
+                        print()
+                        break
+                    
+                    # If user paused the video, do NOT auto-advance
+                    if state.get('paused'):
+                        not_playing_streak = 0
+                        time.sleep(1)
+                        continue
 
-                # Wenn nichts zu tun, warte kurz
-                time.sleep(1)
+                    # If not paused but also not really playing (e.g., buffering), tolerate for a few cycles
+                    if not is_video_playing(driver):
+                        not_playing_streak += 1
+                        if not_playing_streak >= 10:  # ~20s given sleep(2) below
+                            logging.warning("Video not progressing, giving up this episode")
+                            break
+                        time.sleep(2)
+                        continue
+                    
+                    time.sleep(2)
+                    
+                except Exception as e:
+                    logging.warning(f"Playback monitoring error: {e}")
+                    time.sleep(1)
+            
+            # Exit fullscreen and prepare for next episode
+            exit_fullscreen(driver)
+            current += 1
+            
+            # Check if next episode exists
+            try:
+                navigate_to_episode(driver, current_series, current_season, current, db)
+                if not switch_to_video_frame(driver):
+                    logging.info("No video for next episode, ending series")
+                    break
+                driver.switch_to.default_content()
+            except Exception as e:
+                logging.info(f"Next episode not available: {e}")
+                break
+            
+            time.sleep(1)
+    
+    except Exception as e:
+        logging.error(f"Playback loop error: {e}")
+    finally:
+        is_playing = False
+        logging.info("Playback loop ended")
+
+# === MAIN FUNCTION ===
+def main():
+    """Main function with comprehensive error handling"""
+    global should_quit
+    
+    logging.info("Starting BingeWatcher")
+    
+    driver = None
+    try:
+        # Start browser
+        driver = start_browser()
+        logging.info("Browser started successfully")
+        
+        # Navigate to start page
+        if not safe_navigate(driver, START_URL):
+            raise BingeWatcherError("Failed to navigate to start page")
+        
+        # Main application loop
+        while not should_quit:
+            try:
+                driver.switch_to.default_content()
+                
+                # Load and display progress
+                db = load_progress()
+                if not inject_sidebar(driver, db):
+                    logging.warning("Failed to inject sidebar")
+                
+                logging.info(f"Available series: {list(db.keys())}")
+                
+                # Event handling loop
+                while not should_quit:
+                    try:
+                        driver.switch_to.default_content()
+                        
+                        # Check quit signal
+                        if get_cookie(driver, 'bw_quit') == '1':
+                            delete_cookie(driver, 'bw_quit')
+                            logging.info("Quit signal received")
+                            should_quit = True
+                            raise SystemExit
+                        
+                        # Check for series deletion
+                        tod = driver.execute_script("""
+                            let s = localStorage.getItem('bw_seriesToDelete');
+                            if (s) localStorage.removeItem('bw_seriesToDelete');
+                            return s;
+                        """)
+                        if tod:
+                            handle_list_item_deletion(tod)
+                            inject_sidebar(driver, load_progress())
+                            continue
+                        
+                        # Check for series selection
+                        sel = get_cookie(driver, 'bw_series')
+                        if sel and sel in db:
+                            delete_cookie(driver, 'bw_series')
+                            logging.info(f"User selected: {sel}")
+                            
+                            series_data = db[sel]
+                            url = f"{START_URL}serie/stream/{sel}/staffel-{series_data['season']}/episode-{series_data['episode']}"
+                            
+                            if safe_navigate(driver, url):
+                                play_episodes_loop(driver, sel, series_data['season'], 
+                                                 series_data['episode'], series_data.get('position', 0))
+                                safe_navigate(driver, START_URL)
+                            break
+                        
+                        # Auto-detect episode
+                        ser, se, ep = parse_episode_info(driver.current_url)
+                        if ser:
+                            logging.info(f"Auto-detected: {ser} S{se}E{ep}")
+                            play_episodes_loop(driver, ser, se, ep,
+                                             load_progress().get(ser, {}).get('position', 0))
+                            safe_navigate(driver, START_URL)
+                            break
+                        
+                        time.sleep(1)
+                        
+                    except (InvalidSessionIdException, WebDriverException) as e:
+                        logging.info("Browser session ended; exiting main loop")
+                        should_quit = True
+                        raise SystemExit
+                    except Exception as e:
+                        logging.warning(f"Event handling error: {e}")
+                        time.sleep(2)
+                
+            except SystemExit:
+                break
+            except (InvalidSessionIdException, WebDriverException):
+                logging.info("Browser session ended; stopping")
+                break
+            except Exception as e:
+                logging.error(f"Main loop error: {e}")
+                time.sleep(5)
+    
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user")
+    except Exception as e:
+        logging.error(f"Fatal error: {e}")
+    finally:
+        try:
+            if driver:
+                driver.quit()
+                logging.info("Browser closed")
         except Exception:
-            logging.exception("Uncaught error, quitting")
-        finally:
-            driver.quit()
+            pass
+        logging.info("BingeWatcher stopped")
 
 if __name__ == "__main__":
     main()
