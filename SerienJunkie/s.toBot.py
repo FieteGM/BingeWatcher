@@ -687,6 +687,39 @@ def inject_sidebar(driver, db):
                     WebkitBackdropFilter: 'blur(20px)'
                 }});
                 
+                // Auto-save intro seconds: debounce on input, save on blur/Enter (no reload)
+                const bwDebouncers = Object.create(null);
+                d.addEventListener('input', function(e) {{
+                    const inp = e.target.closest('input.bw-intro');
+                    if (!inp) return;
+                    const series = inp.dataset.series;
+                    if (!series) return;
+                    if (bwDebouncers[series]) clearTimeout(bwDebouncers[series]);
+                    bwDebouncers[series] = setTimeout(() => {{
+                        const seconds = parseInt(inp.value||'0', 10) || 0;
+                        localStorage.setItem('bw_intro_update', JSON.stringify({{ series, seconds }}));
+                    }}, 800);
+                }});
+
+                d.addEventListener('keydown', function(e) {{
+                    if (e.key !== 'Enter') return;
+                    const inp = e.target.closest('input.bw-intro');
+                    if (!inp) return;
+                    const series = inp.dataset.series;
+                    if (!series) return;
+                    const seconds = parseInt(inp.value||'0', 10) || 0;
+                    localStorage.setItem('bw_intro_update', JSON.stringify({{ series, seconds }}));
+                }});
+
+                d.addEventListener('focusout', function(e) {{
+                    const inp = e.target.closest('input.bw-intro');
+                    if (!inp) return;
+                    const series = inp.dataset.series;
+                    if (!series) return;
+                    const seconds = parseInt(inp.value||'0', 10) || 0;
+                    localStorage.setItem('bw_intro_update', JSON.stringify({{ series, seconds }}));
+                }});
+
                 d.innerHTML = `
                     <!-- Header -->
                     <div style="padding: 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
@@ -756,7 +789,7 @@ def inject_sidebar(driver, db):
                         if (e.target.closest('.bw-save-intro')) {{
                             const btn = e.target.closest('.bw-save-intro');
                             const series = btn.dataset.series;
-                            const input = d.querySelector(`input.bw-intro[data-series="${{series}}"]`);
+                            const input = d.querySelector('input.bw-intro[data-series="' + series + '"]');
                             if (series && input) {{
                                 localStorage.setItem('bw_intro_update', JSON.stringify({{ series, seconds: parseInt(input.value||'0',10)||0 }}));
                                 location.reload();
@@ -881,20 +914,16 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             # Check for intro skip updates from UI
             try:
                 upd = driver.execute_script("""
-                    let v = localStorage.getItem('bw_intro_update');
-                    if (v) localStorage.removeItem('bw_intro_update');
-                    return v;
+                    const v = localStorage.getItem('bw_intro_update');
+                    if (!v) return null;
+                    try { const o = JSON.parse(v); return o; } catch(e) { return null; }
                 """)
-                if upd:
-                    try:
-                        import json as _json
-                        o = _json.loads(upd)
-                        if isinstance(o, dict) and o.get('series'):
-                            set_intro_skip_seconds(o['series'], int(o.get('seconds', 0)))
-                            inject_sidebar(driver, load_progress())
-                            continue
-                    except Exception:
-                        pass
+                if isinstance(upd, dict) and upd.get('series') is not None:
+                    set_intro_skip_seconds(upd['series'], int(upd.get('seconds', 0)))
+                    # Clear the flag in the page so we don't loop
+                    driver.execute_script("localStorage.removeItem('bw_intro_update');")
+                    inject_sidebar(driver, load_progress())
+                    continue
             except Exception as e:
                 logging.warning(f"Failed to check for intro update: {e}")
             
@@ -959,6 +988,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             # Playback monitoring loop
             playback_start_time = time.time()
             not_playing_streak = 0
+            ended_episode = False
             while is_playing and not should_quit:
                 try:
                     driver.switch_to.default_content()
@@ -1019,6 +1049,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     # Check if episode is ending
                     if rem <= 3 or state.get('ended'):
                         print()
+                        ended_episode = True
                         break
                     
                     # If user paused the video, do NOT auto-advance
@@ -1042,11 +1073,15 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     logging.warning(f"Playback monitoring error: {e}")
                     time.sleep(1)
             
-            # Exit fullscreen and prepare for next episode
+            # Exit fullscreen
             exit_fullscreen(driver)
+
+            # Only auto-advance when the episode actually ended
+            if not ended_episode:
+                break
+
+            # Prepare and attempt next episode
             current += 1
-            
-            # Check if next episode exists
             try:
                 navigate_to_episode(driver, current_series, current_season, current, db)
                 if not switch_to_video_frame(driver):
