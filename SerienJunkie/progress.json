@@ -3,6 +3,13 @@
     "season": 1,
     "episode": 1,
     "position": 1062,
-    "timestamp": 1754603978.640815
+    "timestamp": 1754603978.640815,
+    "intro_skip": 80
+  },
+  "dan-da-dan": {
+    "season": 2,
+    "episode": 6,
+    "position": 94,
+    "timestamp": 1754606416.6924021
   }
 }

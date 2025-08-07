@@ -430,12 +430,14 @@ def save_progress(series, season, episode, position):
     """Save progress with atomic write and backup"""
     try:
         db = load_progress()
-        db[series] = {
-            "season": season, 
-            "episode": episode, 
+        existing = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
+        existing.update({
+            "season": season,
+            "episode": episode,
             "position": position,
             "timestamp": time.time()
-        }
+        })
+        db[series] = existing
         
         # Create backup
         backup_file = PROGRESS_DB_FILE + '.backup'
@@ -495,6 +497,105 @@ def handle_list_item_deletion(name):
         logging.error(f"Failed to delete series {name}: {e}")
     return False
 
+def get_intro_skip_seconds(series: str) -> int:
+    """Return per-series intro skip seconds, defaulting to INTRO_SKIP_SECONDS."""
+    try:
+        data = load_progress().get(series, {})
+        val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
+        return max(0, val)
+    except Exception:
+        return INTRO_SKIP_SECONDS
+
+def set_intro_skip_seconds(series: str, seconds: int) -> bool:
+    """Persist per-series intro skip seconds into progress DB."""
+    try:
+        seconds = max(0, int(seconds))
+        db = load_progress()
+        entry = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
+        entry["intro_skip"] = seconds
+        db[series] = entry
+        with open(PROGRESS_DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        logging.info(f"Intro skip for '{series}' set to {seconds}s")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to set intro skip for {series}: {e}")
+        return False
+
+def inject_video_skip_overlay(driver, intro_seconds: int) -> bool:
+    """Inject a floating 'Skip Intro' icon inside the video iframe."""
+    try:
+        # Assume caller ensures we're inside the video iframe
+        script = f"""
+            (function() {{
+                try {{
+                    const DOC = document;
+                    let v = DOC.querySelector('video');
+                    if (!v) return false;
+                    let old = DOC.getElementById('bwVideoControls');
+                    if (old) old.remove();
+                    const wrap = DOC.createElement('div');
+                    wrap.id = 'bwVideoControls';
+                    wrap.style.position = 'absolute';
+                    wrap.style.right = '20px';
+                    wrap.style.bottom = '24px';
+                    wrap.style.zIndex = 2147483647;
+                    wrap.style.pointerEvents = 'auto';
+                    wrap.style.display = 'flex';
+                    wrap.style.gap = '8px';
+                    
+                    const btn = DOC.createElement('button');
+                    btn.title = 'Skip Intro';
+                    btn.style.width = '44px';
+                    btn.style.height = '44px';
+                    btn.style.borderRadius = '999px';
+                    btn.style.border = '1px solid rgba(255,255,255,0.25)';
+                    btn.style.background = 'linear-gradient(135deg, rgba(15,23,42,0.6), rgba(2,6,23,0.6))';
+                    btn.style.backdropFilter = 'blur(6px)';
+                    btn.style.WebkitBackdropFilter = 'blur(6px)';
+                    btn.style.cursor = 'pointer';
+                    btn.style.display = 'flex';
+                    btn.style.alignItems = 'center';
+                    btn.style.justifyContent = 'center';
+                    btn.style.boxShadow = '0 10px 20px rgba(0,0,0,0.35)';
+                    btn.style.color = '#e2e8f0';
+                    btn.style.transition = 'transform .15s ease, background .2s ease';
+                    btn.onmouseenter = () => btn.style.transform = 'translateY(-1px)';
+                    btn.onmouseleave = () => btn.style.transform = 'translateY(0)';
+                    
+                    btn.innerHTML = `
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M8 5v14l11-7-11-7z" fill="currentColor"/>
+                        </svg>`;
+                    
+                    btn.addEventListener('click', () => {{
+                        const v = DOC.querySelector('video');
+                        if (!v) return;
+                        try {{ v.currentTime = {int(intro_seconds)}; }} catch (_) {{}}
+                    }});
+                    
+                    wrap.appendChild(btn);
+                    
+                    // Position container relative to the player
+                    let host = v.parentElement;
+                    // Walk up a bit to find a positioned container
+                    let steps = 0;
+                    while (host && steps < 5 && getComputedStyle(host).position === 'static') {{
+                        host = host.parentElement; steps++;
+                    }}
+                    (host || DOC.body).appendChild(wrap);
+                    
+                    return true;
+                }} catch (e) {{
+                    return false;
+                }}
+            }})();
+        """
+        return bool(driver.execute_script(script))
+    except Exception as e:
+        logging.warning(f"Failed to inject video controls: {e}")
+        return False
+
 # === SIDEBAR MANAGEMENT ===
 def inject_sidebar(driver, db):
     """Inject the sidebar with futuristic Next UI design"""
@@ -509,6 +610,7 @@ def inject_sidebar(driver, db):
                 duration = 1200
                 position = data.get('position', 0)
                 progress_percent = min((position / duration) * 100, 100)
+                current_intro = int(data.get('intro_skip', INTRO_SKIP_SECONDS))
                 
                 items.append(f'''
                     <div class="bw-series-item" data-series="{series_name}" data-season="{data.get('season', 1)}" data-episode="{data.get('episode', 1)}"
@@ -535,10 +637,20 @@ def inject_sidebar(driver, db):
                                     <span style="opacity: 0.7;">{data.get('position', 0)}s</span>
                                 </div>
                             </div>
-                            <div class="bw-delete" data-series="{series_name}" 
-                                 style="color: #ef4444; cursor: pointer; padding: 6px; border-radius: 6px;
-                                        background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2);
-                                        transition: all 0.2s; font-size: 12px; font-weight: 500;">✕</div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <div title="Intro skip seconds" style="display:flex; align-items:center; gap:6px;">
+                                    <input class="bw-intro" data-series="{series_name}" type="number" min="0" value="{current_intro}" 
+                                        style="width:72px; padding:6px 8px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:rgba(2,6,23,0.35); color:#e2e8f0;"/>
+                                    <button class="bw-save-intro" data-series="{series_name}" title="Save intro skip" 
+                                        style="width:34px;height:34px;border-radius:8px;border:1px solid rgba(34,197,94,0.35); background:rgba(34,197,94,0.15); color:#86efac; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.2l-3.5-3.5 1.4-1.4L9 13.4l7.1-7.1 1.4 1.4z"/></svg>
+                                    </button>
+                                </div>
+                                <div class="bw-delete" data-series="{series_name}" 
+                                     style="color: #ef4444; cursor: pointer; padding: 6px; border-radius: 6px;
+                                            background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2);
+                                            transition: all 0.2s; font-size: 12px; font-weight: 500;">✕</div>
+                            </div>
                         </div>
                     </div>
                 ''')
@@ -592,13 +704,7 @@ def inject_sidebar(driver, db):
                                                       transition: all 0.2s; backdrop-filter: blur(10px);">Close</button>
                         </div>
                         
-                        <!-- Control buttons -->
-                        <div style="display: flex; gap: 8px;">
-                            <button id="bwSkip" style="flex: 1; background: linear-gradient(135deg, #10b981, #059669); 
-                                                      color: white; border: none; padding: 10px 16px; border-radius: 8px; 
-                                                      cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s;
-                                                      box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2);">Skip to End</button>
-                        </div>
+                        <!-- No header controls here anymore -->
                     </div>
                     
                     <!-- Series list -->
@@ -634,19 +740,11 @@ def inject_sidebar(driver, db):
                     </style>
                 `;
                 
-                document.documentElement.appendChild(d);
+                (document.body || document.documentElement).appendChild(d);
                 
                 // Event handling with improved interactions
                 d.addEventListener('click', function(e) {{
                     try {{
-                        if (e.target.id === 'bwSkip') {{
-                            let v = document.querySelector('video');
-                            if (v && v.duration) {{
-                                v.currentTime = v.duration - 1;
-                                console.log('Skipped to end');
-                            }}
-                            return;
-                        }}
                         
                         if (e.target.id === 'bwQuit') {{
                             document.cookie = 'bw_quit=1;path=/;max-age=3600';
@@ -655,6 +753,17 @@ def inject_sidebar(driver, db):
                             return;
                         }}
                         
+                        if (e.target.closest('.bw-save-intro')) {{
+                            const btn = e.target.closest('.bw-save-intro');
+                            const series = btn.dataset.series;
+                            const input = d.querySelector(`input.bw-intro[data-series="${{series}}"]`);
+                            if (series && input) {{
+                                localStorage.setItem('bw_intro_update', JSON.stringify({{ series, seconds: parseInt(input.value||'0',10)||0 }}));
+                                location.reload();
+                            }}
+                            return;
+                        }}
+
                         if (e.target.classList.contains('bw-delete')) {{
                             let series = e.target.dataset.series;
                             if (series) {{
@@ -768,6 +877,26 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     continue
             except Exception as e:
                 logging.warning(f"Failed to check for deletion: {e}")
+
+            # Check for intro skip updates from UI
+            try:
+                upd = driver.execute_script("""
+                    let v = localStorage.getItem('bw_intro_update');
+                    if (v) localStorage.removeItem('bw_intro_update');
+                    return v;
+                """)
+                if upd:
+                    try:
+                        import json as _json
+                        o = _json.loads(upd)
+                        if isinstance(o, dict) and o.get('series'):
+                            set_intro_skip_seconds(o['series'], int(o.get('seconds', 0)))
+                            inject_sidebar(driver, load_progress())
+                            continue
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.warning(f"Failed to check for intro update: {e}")
             
             # Load episode
             logging.info(f"▶ Playing {current_series} S{current_season}E{current}")
@@ -812,13 +941,20 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             # Enable fullscreen
             enable_fullscreen(driver)
             
-            # Skip intro if video is long enough
+            # Skip intro if video is long enough, using per-series setting and inject in-frame control
             try:
                 duration = get_video_duration(driver)
-                if duration > INTRO_SKIP_SECONDS:
-                    skip_intro(driver, INTRO_SKIP_SECONDS)
+                series_intro = get_intro_skip_seconds(current_series)
+                if duration > series_intro and series_intro > 0:
+                    skip_intro(driver, series_intro)
+                try:
+                    if switch_to_video_frame(driver):
+                        inject_video_skip_overlay(driver, series_intro)
+                        driver.switch_to.default_content()
+                except Exception:
+                    driver.switch_to.default_content()
             except Exception as e:
-                logging.warning(f"Failed to skip intro: {e}")
+                logging.warning(f"Failed to handle intro skipping: {e}")
             
             # Playback monitoring loop
             playback_start_time = time.time()
