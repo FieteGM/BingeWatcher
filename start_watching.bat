@@ -82,8 +82,18 @@ if not "!missing_modules!"=="" (
 )
 
 REM === Start Python Script ===
+set BW_DEBUG=1
 python s.toBot.py
 set EXITCODE=%ERRORLEVEL%
+
+REM Immer pausieren, damit du die letzte Zeile siehst
+echo.
+echo [i] Python exit code: %EXITCODE%
+pause
+
+REM Cleanup & exit
+taskkill /IM tor.exe /F >nul 2>&1
+exit /b %EXITCODE%
 
 REM === Cleanup and exit depending on Python exit code ===
 if %EXITCODE% EQU 0 (
