@@ -1,15 +1,9 @@
 {
-  "one-piece": {
-    "season": 1,
-    "episode": 1,
-    "position": 1062,
-    "timestamp": 1754603978.640815,
-    "intro_skip": 80
-  },
   "dan-da-dan": {
     "season": 2,
     "episode": 6,
-    "position": 80,
-    "timestamp": 1754607274.3709073
+    "position": 695,
+    "intro_skip": 84,
+    "timestamp": 1754855342.4848878
   }
 }
