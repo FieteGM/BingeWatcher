@@ -5,6 +5,7 @@ import time
 import json
 import logging
 from typing import Optional, Tuple, Dict, Any
+from urllib.parse import unquote
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -188,13 +189,21 @@ def start_browser() -> webdriver.Firefox:
         profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
         os.makedirs(profile_path, exist_ok=True)
 
+        # General
         options = webdriver.FirefoxOptions()
+        options.set_preference("dom.popup_allowed_events", "change click dblclick mouseup pointerup touchend")
         options.set_preference("general.useragent.override",
                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0")
         options.set_preference("dom.allow_scripts_to_close_windows", True)
         options.set_preference("browser.tabs.warnOnClose", False)
         options.set_preference("browser.warnOnQuit", False)
         options.set_preference("browser.sessionstore.warnOnQuit", False)
+        # Autoplay
+        options.set_preference("media.autoplay.default", 0)  # 0=allow all
+        options.set_preference("media.block-autoplay-until-in-foreground", False)
+        options.set_preference("media.autoplay.blocking_policy", 0)
+        options.set_preference("media.autoplay.allow-muted", True)
+        # Profile
         options.set_preference("profile", profile_path)
         options.profile = profile_path
 
@@ -265,6 +274,163 @@ def navigate_to_episode(driver: webdriver.Firefox, series: str, season: int, epi
     return True
 
 
+def _dismiss_consent_and_overlays(driver: webdriver.Firefox) -> None:
+    driver.switch_to.default_content()
+    try:
+        # gängige Consent-Texte
+        labels = [
+            "Akzeptieren","Zustimmen","Einverstanden","Alles akzeptieren",
+            "Accept","Agree","I agree","Allow all","Got it"
+        ]
+        # Buttons/links mit Label
+        for lb in labels:
+            try:
+                el = WebDriverWait(driver, 1).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//*[self::button or self::a][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '{lb.lower()}')]"))
+                )
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                try:
+                    el.click()
+                except Exception:
+                    ActionChains(driver).move_to_element(el).click().perform()
+            except Exception:
+                pass
+        # bekannte Container wegklicken
+        driver.execute_script("""
+            try{
+              const ids=['didomi','sp_message_container','qc-cmp2-container','usercentrics-root','consent'];
+              ids.forEach(id=>{ const e=document.getElementById(id); if(e) e.remove(); });
+              const sel=['.sp_veil','.qc-cmp2-container','.pm-accept','.uc-overlay','.cc-window','.osano-cm-dialog'];
+              sel.forEach(s=>document.querySelectorAll(s).forEach(x=>x.remove()));
+            }catch(_){}
+        """)
+    except Exception:
+        pass
+
+
+def open_preferred_hoster(driver: webdriver.Firefox) -> bool:
+    driver.switch_to.default_content()
+    _dismiss_consent_and_overlays(driver)
+
+    # etwas scrollen, damit hoster-liste sicher im DOM ist
+    try:
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.3)
+        for _ in range(3):
+            driver.execute_script("window.scrollBy(0, window.innerHeight * 0.9);")
+            time.sleep(0.3)
+    except Exception:
+        pass
+
+    handles_before = set(driver.window_handles)
+    preferred = ["VOE","STREAMTAPE","DOOD","VIDOZA","VIDMOLY","SIBNET","VIDSTREAM","UPSTREAM","FILEMOON"]
+
+    # 1) Mögliche Kandidaten im DOM einsammeln (CSS/XPath, inkl. data-link/-href)
+    candidates = []
+    try:
+        # per XPath: sichtbare Knoten mit Hosternamen im Text ODER href ODER data-Attribut
+        xpath = "|".join([
+            f"//a[contains(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]",
+            f"//button[contains(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]",
+            f"//*[@data-link][contains(translate(@data-link,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]",
+            f"//*[@data-href][contains(translate(@data-href,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]",
+            f"//a[contains(@href, '{h.lower()}') or contains(@href, '{h.capitalize()}')]",
+        ] for h in preferred)
+        # flatten
+        flat = []
+        for h in preferred:
+            flat.extend(driver.find_elements(By.XPATH, f"//a[contains(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]"))
+            flat.extend(driver.find_elements(By.XPATH, f"//button[contains(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]"))
+            flat.extend(driver.find_elements(By.XPATH, f"//*[@data-link][contains(translate(@data-link,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]"))
+            flat.extend(driver.find_elements(By.XPATH, f"//*[@data-href][contains(translate(@data-href,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'{h}')]"))
+            flat.extend(driver.find_elements(By.XPATH, f"//a[contains(@href, '{h.lower()}') or contains(@href, '{h.capitalize()}')]"))
+        # unique
+        seen = set()
+        for el in flat:
+            try:
+                key = (el.tag_name, el.get_attribute("outerHTML")[:160])
+            except Exception:
+                key = id(el)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(el)
+    except Exception:
+        pass
+
+    # 2) Fallback: redirect-Links (s.to nutzt oft /redirect/)
+    try:
+        redirects = driver.find_elements(By.CSS_SELECTOR, "a[href*='/redirect/'], a[data-href*='/redirect/']")
+        for el in redirects:
+            if el not in candidates:
+                candidates.append(el)
+    except Exception:
+        pass
+
+    # 3) Letzter Fallback: beliebige "watch"/"mirror"/"hoster" Items
+    try:
+        fuzzy = driver.find_elements(By.XPATH, "//*[contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'watch') or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'hoster') or contains(translate(@class,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mirror')]")
+        for el in fuzzy:
+            if el not in candidates:
+                candidates.append(el)
+    except Exception:
+        pass
+
+    logging.info(f"Hoster-Kandidaten gefunden: {len(candidates)}")
+
+    # 4) Nacheinander versuchen zu öffnen
+    for el in candidates:
+        try:
+            href = (el.get_attribute("href") or el.get_attribute("data-link") or el.get_attribute("data-href") or "").strip()
+            label = (el.text or el.get_attribute("aria-label") or el.get_attribute("title") or "")[:60]
+            logging.info(f"Versuche Hoster: label='{label}' href='{href}'")
+
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            time.sleep(0.15)
+
+            clickable = None
+            try:
+                clickable = WebDriverWait(driver, 2).until(EC.element_to_be_clickable(el))
+            except Exception:
+                clickable = el
+
+            # Selenium-Klick bevorzugen (gilt als user gesture)
+            try:
+                ActionChains(driver).move_to_element(clickable).pause(0.05).click().perform()
+            except Exception:
+                try:
+                    clickable.click()
+                except Exception:
+                    # JS-Fallback: window.open bei data-link/href
+                    if href.startswith("http"):
+                        driver.execute_script("window.open(arguments[0], '_blank');", href)
+
+            # auf neues Fenster oder Domainwechsel warten
+            def on_hoster():
+                hds = set(driver.window_handles)
+                if len(hds) > len(handles_before):
+                    return True
+                cur = driver.current_url.lower()
+                return any(k in cur for k in ["voe","streamtape","dood","vidoza","vidmoly","sibnet","filemoon","upstream","vidstream"])
+
+            try:
+                WebDriverWait(driver, 6).until(lambda d: on_hoster())
+            except TimeoutException:
+                # nächster Kandidat
+                continue
+
+            # Wir sind drauf—nun auf ein Fenster mit <video> wechseln
+            ok = switch_to_any_window_with_video(driver, max_depth=7)
+            if ok:
+                return True
+            # falls wir hier sind: falsches Popup => nächster Kandidat
+        except Exception:
+            continue
+
+    logging.error("Keinen funktionierenden Hoster öffnen können.")
+    return False
+
+
 # === VIDEO HANDLING ===
 def _has_video(driver: webdriver.Firefox) -> bool:
     try:
@@ -273,7 +439,31 @@ def _has_video(driver: webdriver.Firefox) -> bool:
         return False
 
 
-def switch_to_frame_with_video(driver: webdriver.Firefox, max_depth: int = 2) -> bool:
+def switch_to_any_window_with_video(driver: webdriver.Firefox, max_depth: int = 10) -> bool:
+    def has_video_here() -> bool:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            return False
+
+        return switch_to_frame_with_video(driver, max_depth=max_depth)
+
+    # Erst im aktuellen Fenster probieren
+    if has_video_here():
+        return True
+
+    # Dann alle Fenster durchgehen
+    for handle in driver.window_handles:
+        try:
+            driver.switch_to.window(handle)
+            if has_video_here():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def switch_to_frame_with_video(driver: webdriver.Firefox, max_depth: int = 5) -> bool:
     # Check main document first
     try:
         driver.switch_to.default_content()
@@ -325,35 +515,70 @@ def is_video_playing(driver: webdriver.Firefox) -> bool:
 def try_start_playback(driver: webdriver.Firefox, max_retries: int = 3) -> bool:
     for attempt in range(max_retries):
         try:
-            # Ensure we're in the context with a video element
-            driver.switch_to.default_content()
-            if not switch_to_frame_with_video(driver):
+            # In *irgendeinem* Fenster + Frame mit Video landen
+            if not switch_to_any_window_with_video(driver, max_depth=5):
                 time.sleep(1)
                 continue
 
-            # Try clicking the video
+            video = None
             try:
                 video = WebDriverWait(driver, 8).until(
-                    EC.element_to_be_clickable((By.TAG_NAME, "video"))
+                    EC.presence_of_element_located((By.TAG_NAME, "video"))
                 )
             except TimeoutException:
                 video = None
 
+            # Häufig haben Player ein Overlay / Big-Play
+            try:
+                driver.execute_script("""
+                    (function(){
+                      const sels = [
+                        '.vjs-big-play-button',
+                        '.jw-display', '.jw-icon-play',
+                        '.plyr__control[data-plyr="play"]',
+                        'button[aria-label="Play"]',
+                        '.fp-ui .fp-play'
+                      ];
+                      for (const s of sels) {
+                        const el = document.querySelector(s);
+                        if (el) { el.click(); break; }
+                      }
+                    })();
+                """)
+            except Exception:
+                pass
+
+            # Direkt play() versuchen (Autoplay-Blocker umgehen wir mit muted)
+            try:
+                driver.execute_script("""
+                    const v = document.querySelector('video');
+                    if (v) { try { v.muted = true; } catch(_) {}
+                             try { v.play(); } catch(_) {} }
+                """)
+            except Exception:
+                pass
+
+            # Zusätzlich klicken & Space *auf das Video-Element*, nicht global
             if video is not None:
                 try:
-                    video.click()
-                except ElementClickInterceptedException:
                     ActionChains(driver).move_to_element(video).click().perform()
+                except Exception:
+                    try:
+                        video.click()
+                    except Exception:
+                        pass
+                try:
+                    video.send_keys(Keys.SPACE)
+                except Exception:
+                    pass
 
-            # Fallback: send space
-            if not is_video_playing(driver):
-                ActionChains(driver).send_keys(Keys.SPACE).perform()
-
-            time.sleep(1)
+            time.sleep(1.2)
             if is_video_playing(driver):
                 return True
+
         except Exception:
             pass
+
         logging.warning(f"Playback Start fehlgeschlagen (Versuch {attempt + 1}/{max_retries})")
         time.sleep(1.5)
     return False
@@ -622,7 +847,12 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   try { const v=document.querySelector('video'); if (v && v.duration) v.currentTime=Math.max(0, v.duration-1); } catch(_){}
                   return;
                 }
-                if (c('#bwQuit')) { document.cookie='bw_quit=1; path=/'; return; }
+
+                if (c('#bwQuit')) {
+                    try { localStorage.setItem('bw_quit','1'); } catch(_){}
+                    document.cookie='bw_quit=1; path=/';
+                    return;
+                }
 
                 if (c('#bwSettings')) {
                   const existing = document.getElementById('bwSettingsPanel');
@@ -693,9 +923,12 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
                 const item = c('.bw-series-item');
                 if (item) {
-                  const s = item.getAttribute('data-series');
-                  if (s) document.cookie = 'bw_series=' + s + '; path=/';
-                  return;
+                const s = item.getAttribute('data-series');
+                if (s) {
+                    try { localStorage.setItem('bw_series', s); } catch(_) {}
+                    document.cookie = 'bw_series=' + encodeURIComponent(s) + '; path=/';
+                }
+                return;
                 }
               });
 
@@ -807,6 +1040,30 @@ def play_episodes_loop(driver: webdriver.Firefox, series: str, season: int, epis
             logging.error("Navigation fehlgeschlagen – Abbruch")
             break
 
+        # Hoster öffnen / zu einem Fenster mit Video wechseln
+        if not open_preferred_hoster(driver):
+            logging.error("Kein Hosterfenster mit Video gefunden – Abbruch")
+            break
+
+        # Quit via localStorage
+        try:
+            qls = driver.execute_script("try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }")
+            if qls == '1':
+                driver.execute_script("try { localStorage.removeItem('bw_quit'); } catch(e) {}")
+                should_quit = True
+                break
+        except Exception:
+            pass
+
+        # Quit via cookie
+        if get_cookie(driver, 'bw_quit') == '1':
+            delete_cookie(driver, 'bw_quit')
+            should_quit = True
+            break
+
+        driver.switch_to.default_content()
+        logging.info(f"Handles: {len(driver.window_handles)} | URL: {driver.current_url}")
+
         # Switch to frame with video
         ok = False
         for _ in range(3):
@@ -856,20 +1113,36 @@ def play_episodes_loop(driver: webdriver.Firefox, series: str, season: int, epis
         ended_episode = False
         overlay_shown = False
         while is_playing and not should_quit:
-            # Check quit cookie
             driver.switch_to.default_content()
+
+            # Quit via localStorage
+            try:
+                qls = driver.execute_script("try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }")
+                if qls == '1':
+                    driver.execute_script("try { localStorage.removeItem('bw_quit'); } catch(e) {}")
+                    should_quit = True
+                    break
+            except Exception:
+                pass
+
+            # Quit via cookie
             if get_cookie(driver, 'bw_quit') == '1':
                 delete_cookie(driver, 'bw_quit')
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-                sys.exit(0)
+                should_quit = True
+                break
 
             # Manual series selection takes precedence
             if  get_cookie(driver, 'bw_series'):
                 delete_cookie(driver, 'bw_series')
                 return
+
+            try:
+                lsel = driver.execute_script("try { return localStorage.getItem('bw_series'); } catch(e) { return null; }")
+                if lsel:
+                    driver.execute_script("try { localStorage.removeItem('bw_series'); } catch(e) {}")
+                    return
+            except Exception:
+                pass
 
             # Deletion requests
             try:
@@ -978,12 +1251,52 @@ def play_episodes_loop(driver: webdriver.Firefox, series: str, season: int, epis
                 time.sleep(1)
                 continue
 
-            # If stalled (not playing), try to nudge
+            # If stalled (not playing), nudge the *video*
             if not is_video_playing(driver):
                 try:
-                    ActionChains(driver).send_keys(Keys.SPACE).perform()
+                    # im richtigen Frame/Fenster bleiben
+                    switch_to_frame_with_video(driver)
+
+                    # 1) Direkt play() versuchen (ggf. muted setzen)
+                    driver.execute_script("""
+                        const v = document.querySelector('video');
+                        if (v) {
+                            try { v.muted = true; } catch(e) {}
+                            try { v.play(); } catch(e) {}
+                        }
+                    """)
+
+                    # 2) Typische Big-Play-Overlays klicken
+                    driver.execute_script("""
+                        (function(){
+                        const sels = [
+                            '.vjs-big-play-button',
+                            '.jw-display', '.jw-icon-play',
+                            '.plyr__control[data-plyr="play"]',
+                            'button[aria-label="Play"]',
+                            '.fp-ui .fp-play'
+                        ];
+                        for (const s of sels) {
+                            const el = document.querySelector(s);
+                            if (el) { el.click(); break; }
+                        }
+                        })();
+                    """)
+
+                    # 3) Fokussiert dem Video SPACE geben (falls Player ihn nutzt)
+                    try:
+                        vid = WebDriverWait(driver, 2).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "video"))
+                        )
+                        try:
+                            vid.send_keys(Keys.SPACE)
+                        except Exception:
+                            ActionChains(driver).move_to_element(vid).click().perform()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+
             time.sleep(1.5)
 
         # Exit fullscreen between episodes
@@ -1030,8 +1343,20 @@ def main() -> None:
         while not should_quit:
             try:
                 driver.switch_to.default_content()
+                db = load_progress()
+                
                 if not driver.execute_script("return !!document.getElementById('bingeSidebar');"):
                     inject_sidebar(driver, load_progress())
+
+                # Quit via localStorage
+                try:
+                    qls = driver.execute_script("try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }")
+                    if qls == '1':
+                        driver.execute_script("try { localStorage.removeItem('bw_quit'); } catch(e) {}")
+                        should_quit = True
+                        break
+                except Exception:
+                    pass
 
                 # Quit via cookie
                 if get_cookie(driver, 'bw_quit') == '1':
@@ -1089,14 +1414,38 @@ def main() -> None:
                 except Exception:
                     pass
 
-                # Manual selection via cookie
+                # Manual selection via cookie or localStorage
                 sel = get_cookie(driver, 'bw_series')
-                if sel and sel in db:
+
+                # Fallback: LS lesen, falls Cookie nicht ankam
+                if not sel:
+                    try:
+                        sel = driver.execute_script("try { return localStorage.getItem('bw_series'); } catch(e) { return null; }")
+                    except Exception:
+                        sel = None
+
+                if sel:
+                    try:
+                        sel = unquote(sel)
+                    except Exception:
+                        pass
+
+                    # Aufräumen (beides)
                     delete_cookie(driver, 'bw_series')
-                    sdata = db[sel]
-                    season = int(sdata.get('season', 1))
-                    episode = int(sdata.get('episode', 1))
-                    position = int(sdata.get('position', 0))
+                    try:
+                        driver.execute_script("try { localStorage.removeItem('bw_series'); } catch(e) {}")
+                    except Exception:
+                        pass
+
+                    sdata = db.get(sel)
+                    if sdata:
+                        season   = int(sdata.get('season', 1))
+                        episode  = int(sdata.get('episode', 1))
+                        position = int(sdata.get('position', 0))
+                    else:
+                        # Falls nicht im Fortschritt (sollte selten sein)
+                        season, episode, position = 1, 1, 0
+
                     if safe_navigate(driver, f"{START_URL}serie/stream/{sel}/staffel-{season}/episode-{episode}"):
                         play_episodes_loop(driver, sel, season, episode, position)
                         safe_navigate(driver, START_URL)
