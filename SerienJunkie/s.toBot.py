@@ -793,7 +793,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               Object.assign(d.style, {
                 position:'fixed', left:0, top:0, width:'340px', height:'100vh',
                 background:'linear-gradient(180deg, rgba(15,23,42,.95), rgba(30,41,59,.95))',
-                color:'#f8fafc', overflowY:'auto', zIndex:2147483647,
+                color:'#f8fafc', zIndex:2147483647,
                 borderRight:'1px solid rgba(255,255,255,.1)', backdropFilter:'blur(18px)'
               });
               d.innerHTML = `
@@ -834,10 +834,23 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
               const style = document.createElement('style');
               style.textContent = `
-              #bingeSidebar { width:340px; transition: transform .28s cubic-bezier(.22,.61,.36,1); box-shadow:0 10px 30px rgba(0,0,0,.35); }
-              /* 56px sichtbar lassen (für Griff) */
-              #bingeSidebar[data-collapsed="1"] { transform: translateX(calc(-100% + 56px)); }
-  
+              #bingeSidebar{ width:340px; transition: transform .28s cubic-bezier(.22,.61,.36,1); box-shadow:0 10px 30px rgba(0,0,0,.35); overflow:visible; }
+              /* Collapsed: 56px sichtbar lassen */
+              #bingeSidebar[data-collapsed="1"]{ transform: translateX(calc(-100% + 56px)); }
+              #bingeSidebar[data-collapsed="1"]:hover{
+                transform: translateX(calc(-100% + 92px)); /* 56 + 36 (Handlebreite) */
+              }
+              /* --- PEEK wenn Handle gehovert wird --- */
+              #bingeSidebar[data-collapsed="1"][data-peek="1"]{
+                  transform: translateX(calc(-100% + 92px)); /* etwas weiter rausfahren */
+              }
+
+              #bingeSidebar[data-collapsed="1"]:hover .bw-body{
+                opacity:.35; pointer-events:none;
+              }
+
+              #bingeSidebar .bw-handle{ z-index:5; }
+
               /* Action-Buttons */
               #bingeSidebar .bw-btn{
                   width:36px;height:36px;border-radius:12px;border:1px solid rgba(148,163,184,.22);
@@ -851,21 +864,33 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               #bingeSidebar .bw-btn.danger{ border-color:rgba(239,68,68,.25); background:rgba(239,68,68,.10); color:#fecaca; }
               #bingeSidebar .bw-btn.danger:hover{ border-color:rgba(239,68,68,.45); background:rgba(239,68,68,.16); }
   
-              /* Handle (Griff) */
+              /* Handle */
               #bingeSidebar .bw-handle{
-                  position:absolute; top:5px; right:-20px; width:36px; height:36px; border-radius:999px;
+                  position:absolute; top:50px; right:-18px; width:36px; height:36px; border-radius:999px;
                   border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
-                  backdrop-filter:blur(10px);
-                  display:flex; align-items:center; justify-content:center; cursor:pointer;
+                  backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
                   box-shadow:0 6px 20px rgba(0,0,0,.4);
                   transition: transform .2s ease, background .2s ease, border-color .2s ease;
+                  z-index:1;
               }
+              /* Größere Klickfläche, ohne Optik zu ändern */
+              #bingeSidebar .bw-handle::after{ content:""; position:absolute; inset:-8px; }
+  
               #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:rgba(15,23,42,.9); border-color:rgba(148,163,184,.5); }
               #bingeSidebar .chev{ font-size:16px; line-height:1; transition: transform .2s ease; }
               #bingeSidebar[data-collapsed="1"] .bw-handle .chev{ transform: rotate(180deg); }
-  
-              /* Body weich ausblenden beim Collapsen */
-              #bingeSidebar .bw-body{ transition: opacity .2s ease; }
+              #bingeSidebar[data-collapsed="1"] .bw-actions,
+              #bingeSidebar[data-collapsed="1"] #bwSearch,
+              #bingeSidebar[data-collapsed="1"] #bwSort{
+                  opacity:.0; pointer-events:none;
+              }
+              /* Body weich ausblenden */
+              #bingeSidebar .bw-body{ transition: opacity .2s ease; overflow:visible; }
+              #bingeSidebar .bw-body{
+                padding:12px; 
+                overflow-y:auto; 
+                height:calc(100vh - 116px); /* Headerhöhe je nach Bedarf anpassen */
+              }
               #bingeSidebar[data-collapsed="1"] .bw-body{ opacity:0; pointer-events:none; }
               `;
               d.appendChild(style);
@@ -877,12 +902,20 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               };
               if (localStorage.getItem('bw_sidebar_collapsed') === '1') d.setAttribute('data-collapsed','1');
               setHandleTitle();
-  
+
+              tgl.addEventListener('mouseenter', ()=> {
+                if (d.getAttribute('data-collapsed') === '1') d.setAttribute('data-peek','1');
+              });
+                tgl.addEventListener('mouseleave', ()=> {
+                d.removeAttribute('data-peek');
+              });
+            
               tgl.addEventListener('click', (e)=>{
                 e.preventDefault(); e.stopPropagation();
                 const collapsed = d.getAttribute('data-collapsed') === '1';
                 d.setAttribute('data-collapsed', collapsed ? '0' : '1');
                 localStorage.setItem('bw_sidebar_collapsed', collapsed ? '0' : '1');
+                d.removeAttribute('data-peek');
                 setHandleTitle();
               });
 
