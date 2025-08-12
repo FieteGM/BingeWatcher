@@ -4,12 +4,11 @@ import time
 import json
 import logging
 import html as _html
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.parse import unquote
 
 from selenium import webdriver
 from selenium.common.exceptions import (
-    TimeoutException,
     WebDriverException,
     InvalidSessionIdException,
 )
@@ -35,7 +34,9 @@ TOR_SOCKS_PORT: int = int(os.getenv("BW_TOR_PORT", "9050"))
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
+
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, "progress.json")
+SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 
 # === GLOBAL STATE ===
 current_series: Optional[str] = None
@@ -78,14 +79,6 @@ def save_progress(series: str, season: int, episode: int, position: int, extra: 
         if extra:
             entry.update(extra)
         db[series] = entry
-
-        # simple backup
-        try:
-            if os.path.exists(PROGRESS_DB_FILE):
-                import shutil
-                shutil.copy2(PROGRESS_DB_FILE, PROGRESS_DB_FILE + ".backup")
-        except Exception:
-            pass
 
         with open(PROGRESS_DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db, f, indent=2, ensure_ascii=False)
@@ -195,7 +188,80 @@ def is_browser_responsive(driver: webdriver.Firefox) -> bool:
     except Exception:
         return False
 
-# === VIDEO: schlank, aber robust ===
+# === SETTINGS ===
+
+def get_settings(driver):
+    file_s = load_settings_file()
+    ls_s = read_settings(driver) or {}
+
+    merged = {**file_s, **ls_s}
+    merged["autoFullscreen"] = bool(merged.get("autoFullscreen", True))
+    merged["autoSkipIntro"]  = bool(merged.get("autoSkipIntro", True))
+    merged["autoNext"]       = bool(merged.get("autoNext", True))
+    merged["playbackRate"]   = float(merged.get("playbackRate", 1))
+    merged["volume"]         = float(merged.get("volume", 1))
+
+    return merged
+
+def _default_settings() -> Dict[str, Any]:
+    return {
+        "autoFullscreen": True,
+        "autoSkipIntro": True,
+        "autoNext": True,
+        "playbackRate": 1.0,
+        "volume": 1.0,
+    }
+
+def load_settings_file() -> Dict[str, Any]:
+    try:
+        if os.path.exists(SETTINGS_DB_FILE):
+            with open(SETTINGS_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    # mit Defaults mergen (fehlende Keys auffüllen)
+                    d = _default_settings()
+                    d.update({k: data[k] for k in data if k in d})
+                    return d
+        return _default_settings()
+    except Exception as e:
+        logging.warning(f"Settings laden fehlgeschlagen: {e}")
+        return _default_settings()
+
+def save_settings_file(settings: Dict[str, Any]) -> bool:
+    try:
+        d = _default_settings()
+        
+        for k in d.keys():
+            if k in settings:
+                d[k] = settings[k]
+
+        with open(SETTINGS_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logging.error(f"Settings speichern fehlgeschlagen: {e}")
+        return False
+
+def sync_settings_to_localstorage(driver):
+    """Schreibt Datei-Settings in localStorage, falls dort leer/nicht gesetzt."""
+    try:
+        driver.switch_to.default_content()
+        need = driver.execute_script("""
+            try {
+                const raw = localStorage.getItem('bw_settings');
+                if (!raw || raw.trim() === '' ) return true;
+                const obj = JSON.parse(raw);
+                if (!obj || typeof obj !== 'object') return true;
+                return false;
+            } catch(e){ return true; }
+        """)
+        if need:
+            s = load_settings_file()
+            driver.execute_script("localStorage.setItem('bw_settings', arguments[0]);", json.dumps(s))
+    except Exception as e:
+        logging.debug(f"sync_settings_to_localstorage: {e}")
+
+# === VIDEO ===
 def exit_fullscreen(driver):
     try:
         driver.switch_to.default_content()
@@ -312,29 +378,126 @@ def poll_ui_flags(driver):
 
 def play_episodes_loop(driver, series, season, episode, position=0):
     global should_quit
-    db = load_progress()
     current_episode = episode
 
     while True:
-        print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
+        db = load_progress()  # fresh
+        settings = get_settings(driver)
+        auto_fs   = settings["autoFullscreen"]
+        auto_skip = settings["autoSkipIntro"]
+        auto_next = settings["autoNext"]
+        rate      = settings["playbackRate"]
+        vol       = settings["volume"]  # <— NEU
 
+        print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
         navigate_to_episode(driver, series, season, current_episode, db)
-        inject_sidebar(driver, db)
-        
+        sync_settings_to_localstorage(driver)
+
         if not switch_to_video_frame(driver):
             break
 
         if not is_video_playing(driver):
             play_video(driver)
 
-        skip_intro(driver, position or INTRO_SKIP_SECONDS)
-        position = 0
-        enable_fullscreen(driver)
+        # playback rate
+        try:
+            driver.execute_script("const v=document.querySelector('video'); if(v){ v.playbackRate = arguments[0]; }", rate)
+        except Exception:
+            pass
 
-        last_save = time.time()  # throttle fürs Speichern
+        # volume
+        try:
+            driver.execute_script(
+                "const v=document.querySelector('video'); if(v){ v.volume = arguments[0]; v.muted = (arguments[0] === 0); }",
+                vol  # <— statt settings["volume"]
+            )
+        except Exception:
+            pass
+
+        # intro skip: prefer resume position; else setting-based skip
+        if position and position > 0:
+            skip_intro(driver, position)
+        elif auto_skip:
+            skip_intro(driver, get_intro_skip_seconds(series))
+        position = 0
+
+        # fullscreen if enabled
+        if auto_fs:
+            time.sleep(0.12)
+            enable_fullscreen(driver)
+            try:
+                if not driver.execute_script("return !!(document.fullscreenElement || document.webkitFullscreenElement)"):
+                    ActionChains(driver).send_keys('f').perform()
+            except Exception:
+                pass
+
+        last_save = time.time()
+
         while True:
-            # 1) Flags EINMAL im Top-Window lesen
-            flags = poll_ui_flags(driver)  # {'quit':bool,'skip':bool,'del':str|None,'sel':str|None}
+            flags = poll_ui_flags(driver)
+
+            # --- LIVE SETTINGS UPDATE ---------------------------------------
+            try:
+                raw = driver.execute_script("""
+                    let r = localStorage.getItem('bw_settings_update');
+                    if (r) localStorage.removeItem('bw_settings_update');
+                    return r;
+                """)
+                if raw:
+                    upd = json.loads(raw)
+                    # Datei persistieren (UI sendet i.d.R. den vollen Block)
+                    save_settings_file(upd)
+
+                    # Vorherige Werte merken (für Fullscreen-Toggle)
+                    prev_fs  = auto_fs
+                    prev_rate, prev_vol = rate, vol
+
+                    # Lokale Variablen MERGEN
+                    auto_fs   = bool(upd.get('autoFullscreen', auto_fs))
+                    auto_skip = bool(upd.get('autoSkipIntro', auto_skip))
+                    auto_next = bool(upd.get('autoNext', auto_next))
+                    rate      = float(upd.get('playbackRate', rate))
+                    vol       = float(upd.get('volume', vol))
+
+                    # In-memory Settings-Objekt konsistent halten
+                    settings.update({
+                        "autoFullscreen": auto_fs,
+                        "autoSkipIntro":  auto_skip,
+                        "autoNext":       auto_next,
+                        "playbackRate":   rate,
+                        "volume":         vol
+                    })
+
+                    # Sofort auf das Video anwenden (nur wenn nötig)
+                    driver.execute_script("""
+                        const v = document.querySelector('video');
+                        if (!v) return;
+                        if (v.playbackRate !== arguments[0]) v.playbackRate = arguments[0];
+                        if (Math.abs(v.volume - arguments[1]) > 0.001) v.volume = arguments[1];
+                        v.muted = (arguments[1] === 0);
+                    """, rate, vol)
+
+                    # Fullscreen bei Änderung direkt toggeln (optional aber nice)
+                    try:
+                        const_fs = driver.execute_script("return !!(document.fullscreenElement || document.webkitFullscreenElement)")
+                        if auto_fs and not const_fs:
+                            enable_fullscreen(driver)
+                        elif not auto_fs and const_fs:
+                            exit_fullscreen(driver)
+                    except Exception:
+                        pass
+
+                    # LocalStorage mit Datei-Version synchron halten (defensiv)
+                    try:
+                        driver.execute_script(
+                            "localStorage.setItem('bw_settings', arguments[0]);",
+                            json.dumps(load_settings_file())
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # ----------------------------------------------------------------
 
             if flags.get('quit'):
                 should_quit = True
@@ -352,15 +515,13 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     break
 
             if flags.get('sel'):
-                break  # Main-Loop navigiert neu
+                break
 
-            # 2) Nur jetzt (falls nötig) in den Iframe
             if not ensure_video_context(driver):
                 time.sleep(0.2)
                 if not ensure_video_context(driver):
                     break
 
-            # 3) Skip ausführen (im Iframe)
             if flags.get('skip'):
                 try:
                     driver.execute_script("""
@@ -373,14 +534,12 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 except Exception:
                     pass
 
-            # 4) Restzeit berechnen
             remaining_time = driver.execute_script("""
                 const v = document.querySelector('video');
                 if (!v || !isFinite(v.duration)) return 99999;
                 return v.duration - v.currentTime;
             """)
 
-            # 5) Fortschritt nicht bei jedem Tick schreiben
             now = time.time()
             if now - last_save >= PROGRESS_SAVE_INTERVAL:
                 current_pos = get_current_position(driver)
@@ -392,10 +551,13 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
             time.sleep(1.0)
 
+        exit_fullscreen(driver); time.sleep(0.5)
+
+        if not auto_next:
+            return
+
         current_episode += 1
-        exit_fullscreen(driver)
-        time.sleep(0.5)
-        position = get_intro_skip_seconds(series)
+        position = get_intro_skip_seconds(series) if auto_skip else 0
         continue
 
 def delete_cookie(driver: webdriver.Firefox, name: str) -> bool:
@@ -575,6 +737,11 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                         <option value="2">2x</option>
                       </select>
                     </label>
+                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                        <span>Volume</span>
+                        <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
+                        <span id="bwVolumeVal" style="width:40px;text-align:right;"></span>
+                    </label>
                     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
                       <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Speichern</button>
                     </div>
@@ -583,10 +750,17 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
                     const x = id => document.getElementById(id);
-                    if (x('bwOptAutoFullscreen')) x('bwOptAutoFullscreen').checked = !!s.autoFullscreen;
-                    if (x('bwOptAutoSkipIntro')) x('bwOptAutoSkipIntro').checked = !!s.autoSkipIntro;
-                    if (x('bwOptAutoNext')) x('bwOptAutoNext').checked = s.autoNext!==false;
-                    if (x('bwOptPlaybackRate')) x('bwOptPlaybackRate').value = String(s.playbackRate||1);
+                    if (x('bwOptAutoFullscreen')) x('bwOptAutoFullscreen').checked = (s.autoFullscreen !== false);
+                    if (x('bwOptAutoSkipIntro')) x('bwOptAutoSkipIntro').checked = (s.autoSkipIntro !== false);
+                    if (x('bwOptAutoNext')) x('bwOptAutoNext').checked = (s.autoNext !== false);
+                    if (x('bwOptPlaybackRate')) x('bwOptPlaybackRate').value = String(s.playbackRate ?? 1);
+                    if (x('bwOptVolume')) x('bwOptVolume').value = String(Math.max(0, Math.min(1, s.volume ?? 1)));
+                    if (x('bwVolumeVal')) x('bwVolumeVal').textContent = Math.round(parseFloat(x('bwOptVolume').value||'1')*100) + '%';
+                    document.getElementById('bwOptVolume')?.addEventListener('input', (e)=>{
+                        const v = parseFloat(e.target.value||'1');
+                        const vv = document.getElementById('bwVolumeVal');
+                        if (vv) vv.textContent = Math.round(v*100)+'%';
+                    });
                   } catch(_){}
                   p.addEventListener('click', (ev)=>{
                     if (ev.target && ev.target.id==='bwCloseSettings') { p.remove(); }
@@ -595,9 +769,11 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                         autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
                         autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
                         autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
-                        playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1')
+                        playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
+                        volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
                       };
                       localStorage.setItem('bw_settings', JSON.stringify(next));
+                      localStorage.setItem('bw_settings_update', JSON.stringify(next));
                       p.remove();
                     }
                   });
@@ -694,6 +870,7 @@ def main() -> None:
                 
                 if not driver.execute_script("return !!document.getElementById('bingeSidebar');"):
                     inject_sidebar(driver, load_progress())
+                    sync_settings_to_localstorage(driver)
 
                 # Quit via localStorage
                 try:
@@ -723,6 +900,7 @@ def main() -> None:
                     if tod:
                         handle_list_item_deletion(str(tod))
                         inject_sidebar(driver, load_progress())
+                        sync_settings_to_localstorage(driver)
                         html = build_items_html(load_progress())
                         driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
                         continue
@@ -737,8 +915,27 @@ def main() -> None:
                     """)
                     if need:
                         inject_sidebar(driver, load_progress())
+                        sync_settings_to_localstorage(driver)
                         html = build_items_html(load_progress())
                         driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                except Exception:
+                    pass
+
+                # Handle settings updates (from settings panel)
+                try:
+                    upd = driver.execute_script("""
+                        let r = localStorage.getItem('bw_settings_update');
+                        if (r) localStorage.removeItem('bw_settings_update');
+                        return r;
+                    """)
+                    if upd:
+                        data = json.loads(upd)
+                        save_settings_file(data)
+
+                        try:
+                            driver.execute_script("localStorage.setItem('bw_settings', arguments[0]);", json.dumps(load_settings_file()))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -801,7 +998,12 @@ def main() -> None:
                 # Auto detect if user navigated into an episode
                 ser, se, ep = parse_episode_info(driver.current_url or "")
                 if ser and se and ep:
-                    pos = int(load_progress().get(ser, {}).get('position', 0))
+                    sdata = load_progress().get(ser, {})
+                    # Nur resume, wenn gespeicherte Episode identisch ist:
+                    if int(sdata.get('season', -1)) == se and int(sdata.get('episode', -1)) == ep:
+                        pos = int(sdata.get('position', 0))
+                    else:
+                        pos = 0
                     play_episodes_loop(driver, ser, se, ep, pos)
                     safe_navigate(driver, START_URL)
                     continue
