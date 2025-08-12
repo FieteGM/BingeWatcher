@@ -252,16 +252,70 @@ def skip_intro(driver, seconds):
 def get_current_position(driver):
     return driver.execute_script("return document.querySelector('video').currentTime || 0;")
 
+# === TEST --------------------------- ===
+def pull_ls_flag(driver, key: str):
+    """Liest localStorage[key] IM TOP-WINDOW, löscht es dort und gibt den Wert zurück."""
+    try:
+        driver.switch_to.default_content()
+        val = driver.execute_script("""
+            try {
+                const k = arguments[0];
+                const v = localStorage.getItem(k);
+                if (v !== null) localStorage.removeItem(k);
+                return v;
+            } catch(e){ return null; }
+        """, key)
+        return val
+    except Exception:
+        return None
+
+def has_cookie_flag(driver, name: str) -> bool:
+    """Prüft Cookie im Top-Window (gleiche Origin wie Sidebar)."""
+    try:
+        driver.switch_to.default_content()
+        return get_cookie(driver, name) == '1'
+    except Exception:
+        return False
+
+def clear_cookie_flag(driver, name: str):
+    try:
+        driver.switch_to.default_content()
+        delete_cookie(driver, name)
+    except Exception:
+        pass
+
+def ensure_video_context(driver) -> bool:
+    """Zurück in den Iframe wechseln, falls nötig."""
+    try:
+        # wenn bereits ein <video> sichtbar ist, okay
+        ok = driver.execute_script("return !!document.querySelector('video');")
+        if ok: 
+            return True
+    except Exception:
+        pass
+    try:
+        return switch_to_video_frame(driver)
+    except Exception:
+        return False
+
+# === TEST --------------------------- ===
+def poll_ui_flags(driver):
+    driver.switch_to.default_content()
+    return driver.execute_script("""
+      const out={};
+      try{out.quit = localStorage.getItem('bw_quit')==='1'; localStorage.removeItem('bw_quit');}catch(_){}
+      try{out.skip = localStorage.getItem('bw_skip_now')==='1'; localStorage.removeItem('bw_skip_now');}catch(_){}
+      try{out.del  = localStorage.getItem('bw_seriesToDelete'); if(out.del) localStorage.removeItem('bw_seriesToDelete');}catch(_){}
+      try{out.sel  = localStorage.getItem('bw_series'); if(out.sel) localStorage.removeItem('bw_series');}catch(_){}
+      return out;
+    """)
+
 def play_episodes_loop(driver, series, season, episode, position=0):
+    global should_quit
     db = load_progress()
     current_episode = episode
 
     while True:
-
-
-
-
-
         print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
 
         navigate_to_episode(driver, series, season, current_episode, db)
@@ -277,85 +331,72 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         position = 0
         enable_fullscreen(driver)
 
+        last_save = time.time()  # throttle fürs Speichern
         while True:
-            remaining_time = driver.execute_script("""
-                const vid = document.querySelector('video');
-                return vid.duration - vid.currentTime;
-            """)
-            current_pos = get_current_position(driver)
-            save_progress(series, season, current_episode, int(current_pos))
+            # 1) Flags EINMAL im Top-Window lesen
+            flags = poll_ui_flags(driver)  # {'quit':bool,'skip':bool,'del':str|None,'sel':str|None}
 
-            # --- UI-Signale während der Wiedergabe prüfen ---
-            # 1) Quit via localStorage oder Cookie
-            try:
-                qls = driver.execute_script("try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }")
-                if qls == '1':
-                    driver.execute_script("try { localStorage.removeItem('bw_quit'); } catch(e) {}")
-                    should_quit = True
-                    break
-            except Exception:
-                pass
-
-            if get_cookie(driver, 'bw_quit') == '1':
-                delete_cookie(driver, 'bw_quit')
+            if flags.get('quit'):
                 should_quit = True
                 break
 
-            # 2) Delete-Request aus der Sidebar
-            try:
-                tod = driver.execute_script("""
-                    let s = localStorage.getItem('bw_seriesToDelete');
-                    if (s) localStorage.removeItem('bw_seriesToDelete');
-                    return s;
-                """)
-                if tod:
-                    handle_list_item_deletion(str(tod))
-                    # Sidebar live aktualisieren
-                    try:
-                        driver.switch_to.default_content()
-                        html = build_items_html(load_progress())
-                        driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
-                    except Exception:
-                        pass
-                    # Wenn gerade die aktuelle Serie gelöscht wurde → Playback stoppen
-                    if str(tod) == series:
-                        break
-            except Exception:
-                pass
+            if flags.get('del'):
+                handle_list_item_deletion(str(flags['del']))
+                try:
+                    driver.switch_to.default_content()
+                    html = build_items_html(load_progress())
+                    driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                finally:
+                    ensure_video_context(driver)
+                if str(flags['del']) == series:
+                    break
 
-            # 3) Manuelle Serienwahl während der Wiedergabe
-            #    (wir verlassen die Episode und lassen den Main-Loop übernehmen)
-            sel = get_cookie(driver, 'bw_series')
-            if not sel:
+            if flags.get('sel'):
+                break  # Main-Loop navigiert neu
+
+            # 2) Nur jetzt (falls nötig) in den Iframe
+            if not ensure_video_context(driver):
+                time.sleep(0.2)
+                if not ensure_video_context(driver):
+                    break
+
+            # 3) Skip ausführen (im Iframe)
+            if flags.get('skip'):
                 try:
-                    sel = driver.execute_script("try { return localStorage.getItem('bw_series'); } catch(e) { return null; }")
-                except Exception:
-                    sel = None
-            if sel:
-                delete_cookie(driver, 'bw_series')
-                try:
-                    driver.execute_script("try { localStorage.removeItem('bw_series'); } catch(e) {}")
+                    driver.execute_script("""
+                        const v = document.querySelector('video');
+                        if (v && isFinite(v.duration) && v.duration > 1) {
+                            v.currentTime = Math.max(0, v.duration - 1);
+                            try { v.muted = true; v.play(); } catch(_){}
+                        }
+                    """)
                 except Exception:
                     pass
-                break
-            # --- Ende UI-Signale ---
 
-            print(f"[>] Remaining: {int(remaining_time)} sec.", end="\r")
+            # 4) Restzeit berechnen
+            remaining_time = driver.execute_script("""
+                const v = document.querySelector('video');
+                if (!v || !isFinite(v.duration)) return 99999;
+                return v.duration - v.currentTime;
+            """)
+
+            # 5) Fortschritt nicht bei jedem Tick schreiben
+            now = time.time()
+            if now - last_save >= PROGRESS_SAVE_INTERVAL:
+                current_pos = get_current_position(driver)
+                save_progress(series, season, current_episode, int(current_pos))
+                last_save = now
+
             if remaining_time <= 3:
                 break
-            time.sleep(2)
+
+            time.sleep(1.0)
 
         current_episode += 1
         exit_fullscreen(driver)
-        time.sleep(1)
-        db = load_progress() 
-
-        try:
-            navigate_to_episode(driver, series, season, current_episode)
-        except:
-            print("[!] Next episode unavailable. Exiting.")
-            break
-        time.sleep(2)
+        time.sleep(0.5)
+        position = get_intro_skip_seconds(series)
+        continue
 
 def delete_cookie(driver: webdriver.Firefox, name: str) -> bool:
     try:
@@ -459,7 +500,21 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   <div id="bwSeriesList" style="display:flex;flex-direction:column;gap:6px;"></div>
                 </div>
               `;
+
               (document.body||document.documentElement).appendChild(d);
+
+              const btnSkip = document.getElementById('bwSkip');
+              const btnQuit = document.getElementById('bwQuit');
+              if (btnSkip) btnSkip.addEventListener('click', (e)=>{
+                e.preventDefault(); e.stopPropagation();
+                try { localStorage.setItem('bw_skip_now','1'); } catch(_){}
+                document.cookie = 'bw_skip=1; path=/';
+              });
+              if (btnQuit) btnQuit.addEventListener('click', (e)=>{
+                e.preventDefault(); e.stopPropagation();
+                try { localStorage.setItem('bw_quit','1'); } catch(_){}
+                document.cookie = 'bw_quit=1; path=/';
+              });
 
               function onSort(){
                 const mode = document.getElementById('bwSort').value;
@@ -488,17 +543,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
               d.addEventListener('click', (e)=>{
                 const c = sel => e.target.closest && e.target.closest(sel);
-
-                if (c('#bwSkip')) {
-                  try { const v=document.querySelector('video'); if (v && v.duration) v.currentTime=Math.max(0, v.duration-1); } catch(_){}
-                  return;
-                }
-
-                if (c('#bwQuit')) {
-                    try { localStorage.setItem('bw_quit','1'); } catch(_){}
-                    document.cookie='bw_quit=1; path=/';
-                    return;
-                }
 
                 if (c('#bwSettings')) {
                   const existing = document.getElementById('bwSettingsPanel');
@@ -605,11 +649,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 if (document.getElementById('bingeSidebar')) return;
                 try { localStorage.setItem('bw_need_reinject','1'); } catch(_){}
               }
-              const _ps = history.pushState; history.pushState = function(){ const r=_ps.apply(this,arguments); setTimeout(ensureSidebar,0); return r; };
               const _rs = history.replaceState; history.replaceState = function(){ const r=_rs.apply(this,arguments); setTimeout(ensureSidebar,0); return r; };
               window.addEventListener('popstate', ensureSidebar);
               window.addEventListener('hashchange', ensureSidebar);
-              setInterval(ensureSidebar, 1500);
             }
 
             if (typeof html === 'string') {
@@ -619,6 +661,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 window.__bwLastHTML = html;
               }
             }
+
+            function ensureSidebar(){
+            if (document.getElementById('bingeSidebar')) return;
+                try { localStorage.setItem('bw_need_reinject','1'); } catch(_){}
+            }
+            const _rs = history.replaceState; history.replaceState = function(){ const r=_rs.apply(this,arguments); setTimeout(ensureSidebar,0); return r; };
+            window.addEventListener('popstate', ensureSidebar);
+            window.addEventListener('hashchange', ensureSidebar);
           } catch(e) { console.error('Sidebar injection failed', e); }
         })(arguments[0]);
         """, html_concat)
