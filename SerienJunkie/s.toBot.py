@@ -176,6 +176,15 @@ def start_browser() -> webdriver.Firefox:
 
         service = Service(executable_path=GECKO_DRIVER_PATH)
         driver = webdriver.Firefox(service=service, options=options)
+
+        if os.getenv("BW_KIOSK", "false").lower() in {"1", "true", "yes"}:
+            try:
+                driver.fullscreen_window()
+            except Exception:
+                pass
+
+        move_to_primary_and_maximize(driver)
+
         driver.set_window_size(1920, 1080)
         logging.info(
             f"Browser gestartet. Profil: {profile_path} | Tor: {'an' if USE_TOR_PROXY else 'aus'}"
@@ -184,6 +193,53 @@ def start_browser() -> webdriver.Firefox:
     except Exception as e:
         logging.error(f"Browserstart fehlgeschlagen: {e}")
         raise BingeWatcherError("Browserstart fehlgeschlagen")
+
+
+def move_to_primary_and_maximize(driver):
+    """Platziert das Fenster auf dem Primärmonitor (Monitor 1) und maximiert es."""
+    if HEADLESS:
+        return
+    try:
+        # 1) Windows: Arbeitsbereich (Taskleiste ausgenommen)
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            SPI_GETWORKAREA = 0x0030
+            rect = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(
+                SPI_GETWORKAREA, 0, ctypes.byref(rect), 0
+            )
+            x, y = int(rect.left), int(rect.top)
+            w, h = int(rect.right - rect.left), int(rect.bottom - rect.top)
+        except Exception:
+            # 2) Sonst: Primärbildschirm-Größe per tkinter
+            try:
+                import tkinter as tk
+
+                root = tk.Tk()
+                root.withdraw()
+                w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+                root.destroy()
+                x, y = 0, 0
+            except Exception:
+                # 3) Fallback
+                x, y, w, h = 0, 0, 1920, 1080
+
+        driver.set_window_position(x, y)
+        # Entweder explizit auf Arbeitsbereich…
+        driver.set_window_size(w, h)
+        # …oder OS-Maximize als Alternative:
+        try:
+            driver.maximize_window()
+        except Exception:
+            pass
+    except Exception:
+        # Letzte Rettung
+        try:
+            driver.maximize_window()
+        except Exception:
+            pass
 
 
 def safe_navigate(
@@ -642,6 +698,9 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
         exit_fullscreen(driver)
         time.sleep(0.5)
+
+        if should_quit:
+            return
 
         if not auto_next:
             return
