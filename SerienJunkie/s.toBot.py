@@ -381,13 +381,13 @@ def play_episodes_loop(driver, series, season, episode, position=0):
     current_episode = episode
 
     while True:
-        db = load_progress()  # fresh
+        db = load_progress()
         settings = get_settings(driver)
         auto_fs   = settings["autoFullscreen"]
         auto_skip = settings["autoSkipIntro"]
         auto_next = settings["autoNext"]
         rate      = settings["playbackRate"]
-        vol       = settings["volume"]  # <— NEU
+        vol       = settings["volume"]
 
         print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
         navigate_to_episode(driver, series, season, current_episode, db)
@@ -409,7 +409,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         try:
             driver.execute_script(
                 "const v=document.querySelector('video'); if(v){ v.volume = arguments[0]; v.muted = (arguments[0] === 0); }",
-                vol  # <— statt settings["volume"]
+                vol
             )
         except Exception:
             pass
@@ -445,12 +445,8 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 """)
                 if raw:
                     upd = json.loads(raw)
-                    # Datei persistieren (UI sendet i.d.R. den vollen Block)
+                    # Datei persistieren
                     save_settings_file(upd)
-
-                    # Vorherige Werte merken (für Fullscreen-Toggle)
-                    prev_fs  = auto_fs
-                    prev_rate, prev_vol = rate, vol
 
                     # Lokale Variablen MERGEN
                     auto_fs   = bool(upd.get('autoFullscreen', auto_fs))
@@ -468,7 +464,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         "volume":         vol
                     })
 
-                    # Sofort auf das Video anwenden (nur wenn nötig)
+                    # Sofort auf das Video anwenden
                     driver.execute_script("""
                         const v = document.querySelector('video');
                         if (!v) return;
@@ -477,7 +473,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         v.muted = (arguments[1] === 0);
                     """, rate, vol)
 
-                    # Fullscreen bei Änderung direkt toggeln (optional aber nice)
+                    # Fullscreen bei Änderung direkt toggeln
                     try:
                         const_fs = driver.execute_script("return !!(document.fullscreenElement || document.webkitFullscreenElement)")
                         if auto_fs and not const_fs:
@@ -487,7 +483,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     except Exception:
                         pass
 
-                    # LocalStorage mit Datei-Version synchron halten (defensiv)
+                    # LocalStorage mit Datei-Version synchron halten
                     try:
                         driver.execute_script(
                             "localStorage.setItem('bw_settings', arguments[0]);",
@@ -992,7 +988,6 @@ def main() -> None:
 
                     if safe_navigate(driver, f"{START_URL}serie/stream/{sel}/staffel-{season}/episode-{episode}"):
                         play_episodes_loop(driver, sel, season, episode, position)
-                        safe_navigate(driver, START_URL)
                     continue
 
                 # Auto detect if user navigated into an episode
@@ -1005,7 +1000,6 @@ def main() -> None:
                     else:
                         pos = 0
                     play_episodes_loop(driver, ser, se, ep, pos)
-                    safe_navigate(driver, START_URL)
                     continue
 
                 time.sleep(0.8)
