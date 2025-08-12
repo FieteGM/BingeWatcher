@@ -797,32 +797,94 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 borderRight:'1px solid rgba(255,255,255,.1)', backdropFilter:'blur(18px)'
               });
               d.innerHTML = `
-                <div style="padding:16px;border-bottom:1px solid rgba(255,255,255,.1);">
-                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                    <div style="display:flex;align-items:center;gap:8px;">
+              <div class="bw-head" style="position:sticky;top:0;z-index:2;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.08);
+                                          background:linear-gradient(180deg,rgba(15,23,42,.96),rgba(30,41,59,.92));backdrop-filter:blur(12px)">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                  <div style="display:flex;align-items:center;gap:8px;">
                       <div style="width:8px;height:8px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:999px;"></div>
                       <span style="font-weight:700;font-size:18px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BingeWatcher</span>
-                    </div>
-                    <div style="display:flex;gap:8px;">
-                      <button id="bwSettings" title="Settings" style="width:36px;height:36px;border-radius:10px;border:1px solid rgba(148,163,184,.35);background:rgba(148,163,184,.12);color:#cbd5e1;cursor:pointer;">⚙</button>
-                      <button id="bwSkip" title="Skip episode" style="width:36px;height:36px;border-radius:10px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">⏭</button>
-                      <button id="bwQuit" title="Quit" style="width:36px;height:36px;border-radius:10px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.12);color:#fecaca;cursor:pointer;">⏻</button>
-                    </div>
                   </div>
+                  <div class="bw-actions" style="display:flex;gap:8px;">
+                      <button id="bwSettings" class="bw-btn" title="Einstellungen">⚙</button>
+                      <button id="bwSkip" class="bw-btn" title="Episode skippen">⏭</button>
+                      <button id="bwQuit" class="bw-btn danger" title="Beenden">⏻</button>
+                  </div>
+                  </div>
+
+                  <!-- Handle, hängt halb raus -->
+                  <button id="bwCollapse" class="bw-handle" title="Einklappen">
+                  <span class="chev">❮</span>
+                  </button>
+
                   <div style="margin-top:12px;display:flex;gap:8px;">
-                    <input id="bwSearch" placeholder="Suche…" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
-                    <select id="bwSort" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;">
+                  <input id="bwSearch" placeholder="Suche…" style="flex:1;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
+                  <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;">
                       <option value="time">Zuletzt gesehen</option>
                       <option value="name">Name</option>
-                    </select>
+                  </select>
                   </div>
-                </div>
-                <div style="padding:12px;">
+              </div>
+
+              <div id="bwBody" class="bw-body" style="padding:12px;">
                   <div id="bwSeriesList" style="display:flex;flex-direction:column;gap:6px;"></div>
-                </div>
+              </div>
               `;
 
               (document.body||document.documentElement).appendChild(d);
+
+              const style = document.createElement('style');
+              style.textContent = `
+              #bingeSidebar { width:340px; transition: transform .28s cubic-bezier(.22,.61,.36,1); box-shadow:0 10px 30px rgba(0,0,0,.35); }
+              /* 56px sichtbar lassen (für Griff) */
+              #bingeSidebar[data-collapsed="1"] { transform: translateX(calc(-100% + 56px)); }
+  
+              /* Action-Buttons */
+              #bingeSidebar .bw-btn{
+                  width:36px;height:36px;border-radius:12px;border:1px solid rgba(148,163,184,.22);
+                  background:rgba(148,163,184,.10); color:#cbd5e1; cursor:pointer;
+                  display:flex;align-items:center;justify-content:center;
+                  box-shadow:inset 0 -1px rgba(255,255,255,.06);
+                  transition: border-color .2s, background .2s, transform .15s;
+              }
+              #bingeSidebar .bw-btn:hover{ border-color:rgba(148,163,184,.38); background:rgba(148,163,184,.16); transform:translateY(-1px); }
+              #bingeSidebar .bw-btn:active{ transform:translateY(0); }
+              #bingeSidebar .bw-btn.danger{ border-color:rgba(239,68,68,.25); background:rgba(239,68,68,.10); color:#fecaca; }
+              #bingeSidebar .bw-btn.danger:hover{ border-color:rgba(239,68,68,.45); background:rgba(239,68,68,.16); }
+  
+              /* Handle (Griff) */
+              #bingeSidebar .bw-handle{
+                  position:absolute; top:5px; right:-20px; width:36px; height:36px; border-radius:999px;
+                  border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
+                  backdrop-filter:blur(10px);
+                  display:flex; align-items:center; justify-content:center; cursor:pointer;
+                  box-shadow:0 6px 20px rgba(0,0,0,.4);
+                  transition: transform .2s ease, background .2s ease, border-color .2s ease;
+              }
+              #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:rgba(15,23,42,.9); border-color:rgba(148,163,184,.5); }
+              #bingeSidebar .chev{ font-size:16px; line-height:1; transition: transform .2s ease; }
+              #bingeSidebar[data-collapsed="1"] .bw-handle .chev{ transform: rotate(180deg); }
+  
+              /* Body weich ausblenden beim Collapsen */
+              #bingeSidebar .bw-body{ transition: opacity .2s ease; }
+              #bingeSidebar[data-collapsed="1"] .bw-body{ opacity:0; pointer-events:none; }
+              `;
+              d.appendChild(style);
+  
+              const tgl = document.getElementById('bwCollapse');
+                const setHandleTitle = () => {
+                const collapsed = d.getAttribute('data-collapsed') === '1';
+                tgl.title = collapsed ? 'Ausklappen' : 'Einklappen';
+              };
+              if (localStorage.getItem('bw_sidebar_collapsed') === '1') d.setAttribute('data-collapsed','1');
+              setHandleTitle();
+  
+              tgl.addEventListener('click', (e)=>{
+                e.preventDefault(); e.stopPropagation();
+                const collapsed = d.getAttribute('data-collapsed') === '1';
+                d.setAttribute('data-collapsed', collapsed ? '0' : '1');
+                localStorage.setItem('bw_sidebar_collapsed', collapsed ? '0' : '1');
+                setHandleTitle();
+              });
 
               const btnSkip = document.getElementById('bwSkip');
               const btnQuit = document.getElementById('bwQuit');
@@ -886,7 +948,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       <input type="checkbox" id="bwOptAutoNext" checked/><span>Nächste Episode automatisch</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <span>Start-Geschwindigkeit</span>
+                      <span>Geschwindigkeit</span>
                       <select id="bwOptPlaybackRate">
                         <option value="0.75">0.75x</option>
                         <option value="1" selected>1x</option>
@@ -897,7 +959,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       </select>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                        <span>Volume</span>
+                        <span>Lautstärke</span>
                         <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
                         <span id="bwVolumeVal" style="width:40px;text-align:right;"></span>
                     </label>
