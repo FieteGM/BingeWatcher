@@ -601,17 +601,20 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     )
 
                     # Sofort auf das Video anwenden
-                    driver.execute_script(
-                        """
-                        const v = document.querySelector('video');
-                        if (!v) return;
-                        if (v.playbackRate !== arguments[0]) v.playbackRate = arguments[0];
-                        if (Math.abs(v.volume - arguments[1]) > 0.001) v.volume = arguments[1];
-                        v.muted = (arguments[1] === 0);
-                    """,
-                        rate,
-                        vol,
-                    )
+                    try:
+                        if ensure_video_context(driver):
+                            driver.execute_script("""
+                                const v = document.querySelector('video');
+                                if (!v) return;
+                                if (v.playbackRate !== arguments[0]) v.playbackRate = arguments[0];
+                                if (Math.abs(v.volume - arguments[1]) > 0.001) v.volume = arguments[1];
+                                v.muted = (arguments[1] === 0);
+                            """, rate, vol)
+                    finally:
+                        try:
+                            driver.switch_to.default_content()
+                        except Exception:
+                            pass
 
                     # Fullscreen bei Änderung direkt toggeln
                     try:
