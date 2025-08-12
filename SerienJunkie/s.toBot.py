@@ -1,25 +1,20 @@
+import html as _html
+import json
+import logging
 import os
 import re
 import time
-import json
-import logging
-import html as _html
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
 from selenium import webdriver
-from selenium.common.exceptions import (
-    WebDriverException,
-    InvalidSessionIdException,
-)
+from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.firefox.service import Service
-
-HOSTERS = ["voe", "streamtape", "dood", "filemoon", "vidoza", "vidmoly", "sibnet", "upstream", "vidstream"]
 
 # === CONFIGURATION ===
 HEADLESS: bool = os.getenv("BW_HEADLESS", "false").lower() in {"1", "true", "yes"}
@@ -45,10 +40,14 @@ current_episode: Optional[int] = None
 is_playing: bool = False
 should_quit: bool = False
 
-logging.basicConfig(format='[BingeWatcher] %(levelname)s: %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format="[BingeWatcher] %(levelname)s: %(message)s", level=logging.INFO
+)
+
 
 class BingeWatcherError(Exception):
     pass
+
 
 # === UTILS: PROGRESS ===
 def load_progress() -> Dict[str, Dict[str, Any]]:
@@ -66,16 +65,25 @@ def load_progress() -> Dict[str, Dict[str, Any]]:
         logging.error(f"Fehler beim Laden des Fortschritts: {e}")
         return {}
 
-def save_progress(series: str, season: int, episode: int, position: int, extra: Optional[Dict[str, Any]] = None) -> bool:
+
+def save_progress(
+    series: str,
+    season: int,
+    episode: int,
+    position: int,
+    extra: Optional[Dict[str, Any]] = None,
+) -> bool:
     try:
         db = load_progress()
         entry = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
-        entry.update({
-            "season": int(season),
-            "episode": int(episode),
-            "position": int(position),
-            "timestamp": time.time(),
-        })
+        entry.update(
+            {
+                "season": int(season),
+                "episode": int(episode),
+                "position": int(position),
+                "timestamp": time.time(),
+            }
+        )
         if extra:
             entry.update(extra)
         db[series] = entry
@@ -86,6 +94,7 @@ def save_progress(series: str, season: int, episode: int, position: int, extra: 
     except Exception as e:
         logging.error(f"Fehler beim Speichern des Fortschritts: {e}")
         return False
+
 
 def handle_list_item_deletion(name: str) -> bool:
     try:
@@ -100,6 +109,7 @@ def handle_list_item_deletion(name: str) -> bool:
         logging.error(f"Löschen fehlgeschlagen: {e}")
         return False
 
+
 def get_intro_skip_seconds(series: str) -> int:
     try:
         data = load_progress().get(series, {})
@@ -107,6 +117,7 @@ def get_intro_skip_seconds(series: str) -> int:
         return max(0, val)
     except Exception:
         return INTRO_SKIP_SECONDS
+
 
 def set_intro_skip_seconds(series: str, seconds: int) -> bool:
     try:
@@ -122,6 +133,7 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
         logging.error(f"Intro-Zeit konnte nicht gespeichert werden: {e}")
         return False
 
+
 # === BROWSER ===
 def start_browser() -> webdriver.Firefox:
     try:
@@ -129,9 +141,14 @@ def start_browser() -> webdriver.Firefox:
         os.makedirs(profile_path, exist_ok=True)
 
         options = webdriver.FirefoxOptions()
-        options.set_preference("dom.popup_allowed_events", "change click dblclick mouseup pointerup touchend")
-        options.set_preference("general.useragent.override",
-                               "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0")
+        options.set_preference(
+            "dom.popup_allowed_events",
+            "change click dblclick mouseup pointerup touchend",
+        )
+        options.set_preference(
+            "general.useragent.override",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+        )
         options.set_preference("dom.allow_scripts_to_close_windows", True)
         options.set_preference("browser.tabs.warnOnClose", False)
         options.set_preference("browser.warnOnQuit", False)
@@ -160,13 +177,18 @@ def start_browser() -> webdriver.Firefox:
         service = Service(executable_path=GECKO_DRIVER_PATH)
         driver = webdriver.Firefox(service=service, options=options)
         driver.set_window_size(1920, 1080)
-        logging.info(f"Browser gestartet. Profil: {profile_path} | Tor: {'an' if USE_TOR_PROXY else 'aus'}")
+        logging.info(
+            f"Browser gestartet. Profil: {profile_path} | Tor: {'an' if USE_TOR_PROXY else 'aus'}"
+        )
         return driver
     except Exception as e:
         logging.error(f"Browserstart fehlgeschlagen: {e}")
         raise BingeWatcherError("Browserstart fehlgeschlagen")
 
-def safe_navigate(driver: webdriver.Firefox, url: str, max_retries: int = MAX_RETRIES) -> bool:
+
+def safe_navigate(
+    driver: webdriver.Firefox, url: str, max_retries: int = MAX_RETRIES
+) -> bool:
     for attempt in range(max_retries):
         try:
             driver.get(url)
@@ -176,10 +198,13 @@ def safe_navigate(driver: webdriver.Firefox, url: str, max_retries: int = MAX_RE
             time.sleep(1.0)
             return True
         except WebDriverException as e:
-            logging.warning(f"Navigation fehlgeschlagen (Versuch {attempt + 1}/{max_retries}): {e}")
+            logging.warning(
+                f"Navigation fehlgeschlagen (Versuch {attempt + 1}/{max_retries}): {e}"
+            )
             time.sleep(2)
     logging.error(f"Navigation zu {url} nach {max_retries} Versuchen gescheitert")
     return False
+
 
 def is_browser_responsive(driver: webdriver.Firefox) -> bool:
     try:
@@ -188,7 +213,9 @@ def is_browser_responsive(driver: webdriver.Firefox) -> bool:
     except Exception:
         return False
 
+
 # === SETTINGS ===
+
 
 def get_settings(driver):
     file_s = load_settings_file()
@@ -196,12 +223,13 @@ def get_settings(driver):
 
     merged = {**file_s, **ls_s}
     merged["autoFullscreen"] = bool(merged.get("autoFullscreen", True))
-    merged["autoSkipIntro"]  = bool(merged.get("autoSkipIntro", True))
-    merged["autoNext"]       = bool(merged.get("autoNext", True))
-    merged["playbackRate"]   = float(merged.get("playbackRate", 1))
-    merged["volume"]         = float(merged.get("volume", 1))
+    merged["autoSkipIntro"] = bool(merged.get("autoSkipIntro", True))
+    merged["autoNext"] = bool(merged.get("autoNext", True))
+    merged["playbackRate"] = float(merged.get("playbackRate", 1))
+    merged["volume"] = float(merged.get("volume", 1))
 
     return merged
+
 
 def _default_settings() -> Dict[str, Any]:
     return {
@@ -211,6 +239,7 @@ def _default_settings() -> Dict[str, Any]:
         "playbackRate": 1.0,
         "volume": 1.0,
     }
+
 
 def load_settings_file() -> Dict[str, Any]:
     try:
@@ -227,10 +256,11 @@ def load_settings_file() -> Dict[str, Any]:
         logging.warning(f"Settings laden fehlgeschlagen: {e}")
         return _default_settings()
 
+
 def save_settings_file(settings: Dict[str, Any]) -> bool:
     try:
         d = _default_settings()
-        
+
         for k in d.keys():
             if k in settings:
                 d[k] = settings[k]
@@ -242,11 +272,13 @@ def save_settings_file(settings: Dict[str, Any]) -> bool:
         logging.error(f"Settings speichern fehlgeschlagen: {e}")
         return False
 
+
 def sync_settings_to_localstorage(driver):
     """Schreibt Datei-Settings in localStorage, falls dort leer/nicht gesetzt."""
     try:
         driver.switch_to.default_content()
-        need = driver.execute_script("""
+        need = driver.execute_script(
+            """
             try {
                 const raw = localStorage.getItem('bw_settings');
                 if (!raw || raw.trim() === '' ) return true;
@@ -254,12 +286,16 @@ def sync_settings_to_localstorage(driver):
                 if (!obj || typeof obj !== 'object') return true;
                 return false;
             } catch(e){ return true; }
-        """)
+        """
+        )
         if need:
             s = load_settings_file()
-            driver.execute_script("localStorage.setItem('bw_settings', arguments[0]);", json.dumps(s))
+            driver.execute_script(
+                "localStorage.setItem('bw_settings', arguments[0]);", json.dumps(s)
+            )
     except Exception as e:
         logging.debug(f"sync_settings_to_localstorage: {e}")
+
 
 # === VIDEO ===
 def exit_fullscreen(driver):
@@ -270,40 +306,54 @@ def exit_fullscreen(driver):
     except:
         pass
 
+
 def switch_to_video_frame(driver):
     try:
-        iframe = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+        iframe = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.TAG_NAME, "iframe"))
+        )
         driver.switch_to.frame(iframe)
         return True
     except:
         print("[!] Video iframe not found.")
         return False
 
+
 def is_video_playing(driver):
-    return driver.execute_script("""
+    return driver.execute_script(
+        """
         const video = document.querySelector('video');
         return video && !video.paused && video.readyState > 2;
-    """)
+    """
+    )
+
 
 def play_video(driver):
     try:
-        video = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "video")))
+        video = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.TAG_NAME, "video"))
+        )
         ActionChains(driver).move_to_element(video).click().perform()
     except Exception as e:
         print(f"[!] Could not start video: {e}")
 
+
 def enable_fullscreen(driver):
-    driver.execute_script("""
+    driver.execute_script(
+        """
         const video = document.querySelector('video');
         if (video.requestFullscreen) video.requestFullscreen();
         else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-    """)
+    """
+    )
+
 
 def parse_episode_info(url):
-    match = re.search(r'/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)', url)
+    match = re.search(r"/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)", url)
     if match:
         return match.group(1), int(match.group(2)), int(match.group(3))
     return None, None, None
+
 
 def navigate_to_episode(driver, series, season, episode, db):
     next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
@@ -311,37 +361,51 @@ def navigate_to_episode(driver, series, season, episode, db):
     WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
     inject_sidebar(driver, db)
 
+
 def skip_intro(driver, seconds):
-    WebDriverWait(driver, 15).until(lambda d: d.execute_script("return document.querySelector('video')?.readyState > 0;"))
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script(
+            "return document.querySelector('video')?.readyState > 0;"
+        )
+    )
     driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
 
+
 def get_current_position(driver):
-    return driver.execute_script("return document.querySelector('video').currentTime || 0;")
+    return driver.execute_script(
+        "return document.querySelector('video').currentTime || 0;"
+    )
+
 
 # === TEST --------------------------- ===
 def pull_ls_flag(driver, key: str):
     """Liest localStorage[key] IM TOP-WINDOW, löscht es dort und gibt den Wert zurück."""
     try:
         driver.switch_to.default_content()
-        val = driver.execute_script("""
+        val = driver.execute_script(
+            """
             try {
                 const k = arguments[0];
                 const v = localStorage.getItem(k);
                 if (v !== null) localStorage.removeItem(k);
                 return v;
             } catch(e){ return null; }
-        """, key)
+        """,
+            key,
+        )
         return val
     except Exception:
         return None
+
 
 def has_cookie_flag(driver, name: str) -> bool:
     """Prüft Cookie im Top-Window (gleiche Origin wie Sidebar)."""
     try:
         driver.switch_to.default_content()
-        return get_cookie(driver, name) == '1'
+        return get_cookie(driver, name) == "1"
     except Exception:
         return False
+
 
 def clear_cookie_flag(driver, name: str):
     try:
@@ -350,12 +414,13 @@ def clear_cookie_flag(driver, name: str):
     except Exception:
         pass
 
+
 def ensure_video_context(driver) -> bool:
     """Zurück in den Iframe wechseln, falls nötig."""
     try:
         # wenn bereits ein <video> sichtbar ist, okay
         ok = driver.execute_script("return !!document.querySelector('video');")
-        if ok: 
+        if ok:
             return True
     except Exception:
         pass
@@ -364,17 +429,21 @@ def ensure_video_context(driver) -> bool:
     except Exception:
         return False
 
+
 # === TEST --------------------------- ===
 def poll_ui_flags(driver):
     driver.switch_to.default_content()
-    return driver.execute_script("""
+    return driver.execute_script(
+        """
       const out={};
       try{out.quit = localStorage.getItem('bw_quit')==='1'; localStorage.removeItem('bw_quit');}catch(_){}
       try{out.skip = localStorage.getItem('bw_skip_now')==='1'; localStorage.removeItem('bw_skip_now');}catch(_){}
       try{out.del  = localStorage.getItem('bw_seriesToDelete'); if(out.del) localStorage.removeItem('bw_seriesToDelete');}catch(_){}
       try{out.sel  = localStorage.getItem('bw_series'); if(out.sel) localStorage.removeItem('bw_series');}catch(_){}
       return out;
-    """)
+    """
+    )
+
 
 def play_episodes_loop(driver, series, season, episode, position=0):
     global should_quit
@@ -383,13 +452,15 @@ def play_episodes_loop(driver, series, season, episode, position=0):
     while True:
         db = load_progress()
         settings = get_settings(driver)
-        auto_fs   = settings["autoFullscreen"]
+        auto_fs = settings["autoFullscreen"]
         auto_skip = settings["autoSkipIntro"]
         auto_next = settings["autoNext"]
-        rate      = settings["playbackRate"]
-        vol       = settings["volume"]
+        rate = settings["playbackRate"]
+        vol = settings["volume"]
 
-        print(f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}")
+        print(
+            f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}"
+        )
         navigate_to_episode(driver, series, season, current_episode, db)
         sync_settings_to_localstorage(driver)
 
@@ -401,7 +472,10 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
         # playback rate
         try:
-            driver.execute_script("const v=document.querySelector('video'); if(v){ v.playbackRate = arguments[0]; }", rate)
+            driver.execute_script(
+                "const v=document.querySelector('video'); if(v){ v.playbackRate = arguments[0]; }",
+                rate,
+            )
         except Exception:
             pass
 
@@ -409,7 +483,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         try:
             driver.execute_script(
                 "const v=document.querySelector('video'); if(v){ v.volume = arguments[0]; v.muted = (arguments[0] === 0); }",
-                vol
+                vol,
             )
         except Exception:
             pass
@@ -426,8 +500,10 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             time.sleep(0.12)
             enable_fullscreen(driver)
             try:
-                if not driver.execute_script("return !!(document.fullscreenElement || document.webkitFullscreenElement)"):
-                    ActionChains(driver).send_keys('f').perform()
+                if not driver.execute_script(
+                    "return !!(document.fullscreenElement || document.webkitFullscreenElement)"
+                ):
+                    ActionChains(driver).send_keys("f").perform()
             except Exception:
                 pass
 
@@ -438,44 +514,54 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
             # --- LIVE SETTINGS UPDATE ---------------------------------------
             try:
-                raw = driver.execute_script("""
+                raw = driver.execute_script(
+                    """
                     let r = localStorage.getItem('bw_settings_update');
                     if (r) localStorage.removeItem('bw_settings_update');
                     return r;
-                """)
+                """
+                )
                 if raw:
                     upd = json.loads(raw)
                     # Datei persistieren
                     save_settings_file(upd)
 
                     # Lokale Variablen MERGEN
-                    auto_fs   = bool(upd.get('autoFullscreen', auto_fs))
-                    auto_skip = bool(upd.get('autoSkipIntro', auto_skip))
-                    auto_next = bool(upd.get('autoNext', auto_next))
-                    rate      = float(upd.get('playbackRate', rate))
-                    vol       = float(upd.get('volume', vol))
+                    auto_fs = bool(upd.get("autoFullscreen", auto_fs))
+                    auto_skip = bool(upd.get("autoSkipIntro", auto_skip))
+                    auto_next = bool(upd.get("autoNext", auto_next))
+                    rate = float(upd.get("playbackRate", rate))
+                    vol = float(upd.get("volume", vol))
 
                     # In-memory Settings-Objekt konsistent halten
-                    settings.update({
-                        "autoFullscreen": auto_fs,
-                        "autoSkipIntro":  auto_skip,
-                        "autoNext":       auto_next,
-                        "playbackRate":   rate,
-                        "volume":         vol
-                    })
+                    settings.update(
+                        {
+                            "autoFullscreen": auto_fs,
+                            "autoSkipIntro": auto_skip,
+                            "autoNext": auto_next,
+                            "playbackRate": rate,
+                            "volume": vol,
+                        }
+                    )
 
                     # Sofort auf das Video anwenden
-                    driver.execute_script("""
+                    driver.execute_script(
+                        """
                         const v = document.querySelector('video');
                         if (!v) return;
                         if (v.playbackRate !== arguments[0]) v.playbackRate = arguments[0];
                         if (Math.abs(v.volume - arguments[1]) > 0.001) v.volume = arguments[1];
                         v.muted = (arguments[1] === 0);
-                    """, rate, vol)
+                    """,
+                        rate,
+                        vol,
+                    )
 
                     # Fullscreen bei Änderung direkt toggeln
                     try:
-                        const_fs = driver.execute_script("return !!(document.fullscreenElement || document.webkitFullscreenElement)")
+                        const_fs = driver.execute_script(
+                            "return !!(document.fullscreenElement || document.webkitFullscreenElement)"
+                        )
                         if auto_fs and not const_fs:
                             enable_fullscreen(driver)
                         elif not auto_fs and const_fs:
@@ -487,7 +573,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     try:
                         driver.execute_script(
                             "localStorage.setItem('bw_settings', arguments[0]);",
-                            json.dumps(load_settings_file())
+                            json.dumps(load_settings_file()),
                         )
                     except Exception:
                         pass
@@ -495,22 +581,25 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 pass
             # ----------------------------------------------------------------
 
-            if flags.get('quit'):
+            if flags.get("quit"):
                 should_quit = True
                 break
 
-            if flags.get('del'):
-                handle_list_item_deletion(str(flags['del']))
+            if flags.get("del"):
+                handle_list_item_deletion(str(flags["del"]))
                 try:
                     driver.switch_to.default_content()
                     html = build_items_html(load_progress())
-                    driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                    driver.execute_script(
+                        "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                        html,
+                    )
                 finally:
                     ensure_video_context(driver)
-                if str(flags['del']) == series:
+                if str(flags["del"]) == series:
                     break
 
-            if flags.get('sel'):
+            if flags.get("sel"):
                 break
 
             if not ensure_video_context(driver):
@@ -518,23 +607,27 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 if not ensure_video_context(driver):
                     break
 
-            if flags.get('skip'):
+            if flags.get("skip"):
                 try:
-                    driver.execute_script("""
+                    driver.execute_script(
+                        """
                         const v = document.querySelector('video');
                         if (v && isFinite(v.duration) && v.duration > 1) {
                             v.currentTime = Math.max(0, v.duration - 1);
                             try { v.muted = true; v.play(); } catch(_){}
                         }
-                    """)
+                    """
+                    )
                 except Exception:
                     pass
 
-            remaining_time = driver.execute_script("""
+            remaining_time = driver.execute_script(
+                """
                 const v = document.querySelector('video');
                 if (!v || !isFinite(v.duration)) return 99999;
                 return v.duration - v.currentTime;
-            """)
+            """
+            )
 
             now = time.time()
             if now - last_save >= PROGRESS_SAVE_INTERVAL:
@@ -547,7 +640,8 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
             time.sleep(1.0)
 
-        exit_fullscreen(driver); time.sleep(0.5)
+        exit_fullscreen(driver)
+        time.sleep(0.5)
 
         if not auto_next:
             return
@@ -556,17 +650,21 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         position = get_intro_skip_seconds(series) if auto_skip else 0
         continue
 
+
 def delete_cookie(driver: webdriver.Firefox, name: str) -> bool:
     try:
-        driver.delete_cookie(name); return True
+        driver.delete_cookie(name)
+        return True
     except Exception:
         return False
 
+
 def get_cookie(driver, name):
     for c in driver.get_cookies():
-        if c['name'] == name:
-            return c['value']
+        if c["name"] == name:
+            return c["value"]
     return None
+
 
 # === SETTINGS (UI) ===
 def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
@@ -585,12 +683,11 @@ def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     except Exception:
         return {}
 
+
 def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
     items_html = []
     sorted_items = sorted(
-        db.items(),
-        key=lambda kv: float(kv[1].get("timestamp", 0)),
-        reverse=True
+        db.items(), key=lambda kv: float(kv[1].get("timestamp", 0)), reverse=True
     )
     for series_name, data in sorted_items:
         season = int(data.get("season", 1))
@@ -599,7 +696,8 @@ def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
         intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
         ts_val = float(data.get("timestamp", 0))
         safe_name = _html.escape(series_name, quote=True)
-        items_html.append(f"""
+        items_html.append(
+            f"""
       <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}"
            style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
                   border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
@@ -613,14 +711,17 @@ def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
           <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:6px;border-radius:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;">✕</div>
         </div>
       </div>
-    """)
+    """
+        )
     return "\n".join(items_html)
+
 
 def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> bool:
     try:
         driver.switch_to.default_content()
         html_concat = build_items_html(db)
-        driver.execute_script("""
+        driver.execute_script(
+            """
         (function(html){
           try {
             let d = document.getElementById('bingeSidebar');
@@ -843,11 +944,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
             window.addEventListener('hashchange', ensureSidebar);
           } catch(e) { console.error('Sidebar injection failed', e); }
         })(arguments[0]);
-        """, html_concat)
+        """,
+            html_concat,
+        )
         return True
     except Exception as e:
         logging.error(f"Sidebar-Injektion fehlgeschlagen: {e}")
         return False
+
 
 # === MAIN ===
 def main() -> None:
@@ -863,24 +967,30 @@ def main() -> None:
             try:
                 driver.switch_to.default_content()
                 db = load_progress()
-                
-                if not driver.execute_script("return !!document.getElementById('bingeSidebar');"):
+
+                if not driver.execute_script(
+                    "return !!document.getElementById('bingeSidebar');"
+                ):
                     inject_sidebar(driver, load_progress())
                     sync_settings_to_localstorage(driver)
 
                 # Quit via localStorage
                 try:
-                    qls = driver.execute_script("try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }")
-                    if qls == '1':
-                        driver.execute_script("try { localStorage.removeItem('bw_quit'); } catch(e) {}")
+                    qls = driver.execute_script(
+                        "try { return localStorage.getItem('bw_quit'); } catch(e) { return null; }"
+                    )
+                    if qls == "1":
+                        driver.execute_script(
+                            "try { localStorage.removeItem('bw_quit'); } catch(e) {}"
+                        )
                         should_quit = True
                         break
                 except Exception:
                     pass
 
                 # Quit via cookie
-                if get_cookie(driver, 'bw_quit') == '1':
-                    delete_cookie(driver, 'bw_quit')
+                if get_cookie(driver, "bw_quit") == "1":
+                    delete_cookie(driver, "bw_quit")
                     should_quit = True
                     break
 
@@ -898,38 +1008,51 @@ def main() -> None:
                         inject_sidebar(driver, load_progress())
                         sync_settings_to_localstorage(driver)
                         html = build_items_html(load_progress())
-                        driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                        driver.execute_script(
+                            "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                            html,
+                        )
                         continue
                 except Exception:
                     pass
 
                 try:
-                    need = driver.execute_script("""
+                    need = driver.execute_script(
+                        """
                         let v = localStorage.getItem('bw_need_reinject');
                         if (v) localStorage.removeItem('bw_need_reinject');
                         return v;
-                    """)
+                    """
+                    )
                     if need:
                         inject_sidebar(driver, load_progress())
                         sync_settings_to_localstorage(driver)
                         html = build_items_html(load_progress())
-                        driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                        driver.execute_script(
+                            "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                            html,
+                        )
                 except Exception:
                     pass
 
                 # Handle settings updates (from settings panel)
                 try:
-                    upd = driver.execute_script("""
+                    upd = driver.execute_script(
+                        """
                         let r = localStorage.getItem('bw_settings_update');
                         if (r) localStorage.removeItem('bw_settings_update');
                         return r;
-                    """)
+                    """
+                    )
                     if upd:
                         data = json.loads(upd)
                         save_settings_file(data)
 
                         try:
-                            driver.execute_script("localStorage.setItem('bw_settings', arguments[0]);", json.dumps(load_settings_file()))
+                            driver.execute_script(
+                                "localStorage.setItem('bw_settings', arguments[0]);",
+                                json.dumps(load_settings_file()),
+                            )
                         except Exception:
                             pass
                 except Exception:
@@ -937,30 +1060,37 @@ def main() -> None:
 
                 # Handle intro updates (from sidebar input)
                 try:
-                    upd = driver.execute_script("""
+                    upd = driver.execute_script(
+                        """
                         let r = localStorage.getItem('bw_intro_update');
                         if (r) localStorage.removeItem('bw_intro_update');
                         return r;
-                    """)
+                    """
+                    )
                     if upd:
                         data = json.loads(upd)
-                        ser = data.get('series')
-                        secs = data.get('seconds')
+                        ser = data.get("series")
+                        secs = data.get("seconds")
                         if ser and isinstance(secs, (int, float)):
                             set_intro_skip_seconds(ser, int(secs))
                             # Liste live pushen
                             html = build_items_html(load_progress())
-                            driver.execute_script("if (window.__bwSetList){window.__bwSetList(arguments[0]);}", html)
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
                 except Exception:
                     pass
 
                 # Manual selection via cookie or localStorage
-                sel = get_cookie(driver, 'bw_series')
+                sel = get_cookie(driver, "bw_series")
 
                 # Fallback: LS lesen, falls Cookie nicht ankam
                 if not sel:
                     try:
-                        sel = driver.execute_script("try { return localStorage.getItem('bw_series'); } catch(e) { return null; }")
+                        sel = driver.execute_script(
+                            "try { return localStorage.getItem('bw_series'); } catch(e) { return null; }"
+                        )
                     except Exception:
                         sel = None
 
@@ -971,22 +1101,27 @@ def main() -> None:
                         pass
 
                     # Aufräumen (beides)
-                    delete_cookie(driver, 'bw_series')
+                    delete_cookie(driver, "bw_series")
                     try:
-                        driver.execute_script("try { localStorage.removeItem('bw_series'); } catch(e) {}")
+                        driver.execute_script(
+                            "try { localStorage.removeItem('bw_series'); } catch(e) {}"
+                        )
                     except Exception:
                         pass
 
                     sdata = db.get(sel)
                     if sdata:
-                        season   = int(sdata.get('season', 1))
-                        episode  = int(sdata.get('episode', 1))
-                        position = int(sdata.get('position', 0))
+                        season = int(sdata.get("season", 1))
+                        episode = int(sdata.get("episode", 1))
+                        position = int(sdata.get("position", 0))
                     else:
                         # Falls nicht im Fortschritt (sollte selten sein)
                         season, episode, position = 1, 1, 0
 
-                    if safe_navigate(driver, f"{START_URL}serie/stream/{sel}/staffel-{season}/episode-{episode}"):
+                    if safe_navigate(
+                        driver,
+                        f"{START_URL}serie/stream/{sel}/staffel-{season}/episode-{episode}",
+                    ):
                         play_episodes_loop(driver, sel, season, episode, position)
                     continue
 
@@ -995,8 +1130,11 @@ def main() -> None:
                 if ser and se and ep:
                     sdata = load_progress().get(ser, {})
                     # Nur resume, wenn gespeicherte Episode identisch ist:
-                    if int(sdata.get('season', -1)) == se and int(sdata.get('episode', -1)) == ep:
-                        pos = int(sdata.get('position', 0))
+                    if (
+                        int(sdata.get("season", -1)) == se
+                        and int(sdata.get("episode", -1)) == ep
+                    ):
+                        pos = int(sdata.get("position", 0))
                     else:
                         pos = 0
                     play_episodes_loop(driver, ser, se, ep, pos)
@@ -1021,6 +1159,7 @@ def main() -> None:
         except Exception:
             pass
         logging.info("BingeWatcher beendet")
+
 
 if __name__ == "__main__":
     main()
