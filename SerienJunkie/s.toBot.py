@@ -134,6 +134,13 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
         return False
 
 
+def norm_series_key(s: str) -> str:
+    try:
+        return _html.unescape(str(s or '')).strip()
+    except Exception:
+        return str(s or '').strip()
+
+
 # === BROWSER HANDLING --------------------------- ===
 def start_browser() -> webdriver.Firefox:
     try:
@@ -392,6 +399,7 @@ def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
         for f1 in frames_lvl1:
             try:
                 driver.switch_to.default_content()
+                _arm_iframe_for_fullscreen(driver, f1)
                 driver.switch_to.frame(f1)
                 if driver.execute_script("return !!document.querySelector('video')"):
                     return True
@@ -402,6 +410,7 @@ def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
                     frames_lvl2 = []
                 for f2 in frames_lvl2:
                     try:
+                        _arm_iframe_for_fullscreen(driver, f2)
                         driver.switch_to.frame(f2)
                         if driver.execute_script(
                             "return !!document.querySelector('video')"
@@ -463,7 +472,7 @@ def poll_ui_flags(driver):
       try{out.quit = localStorage.getItem('bw_quit')==='1'; localStorage.removeItem('bw_quit');}catch(_){}
       try{out.skip = localStorage.getItem('bw_skip_now')==='1'; localStorage.removeItem('bw_skip_now');}catch(_){}
       try{out.del  = localStorage.getItem('bw_seriesToDelete'); if(out.del) localStorage.removeItem('bw_seriesToDelete');}catch(_){}
-      try{out.sel  = localStorage.getItem('bw_series'); if(out.sel) localStorage.removeItem('bw_series');}catch(_){}
+      try{ out.sel = localStorage.getItem('bw_series'); }catch(_){}
       return out;
     """
     )
@@ -540,6 +549,21 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         play_video(driver)
         apply_media_settings(driver, rate, vol)
 
+        # intro_skip nach Hoster-/Src-Wechsel erneut respektieren
+        try:
+            const_ser = series  # aus umgebendem Scope
+            const_secs = get_intro_skip_seconds(const_ser)
+            driver.execute_script("""
+                const v = document.querySelector('video');
+                const secs = arguments[0];
+                if (v && isFinite(v.duration) && v.currentTime < secs && secs < (v.duration - 3)) {
+                    v.currentTime = secs;
+                    try { v.play().catch(()=>{}); } catch(_) {}
+                }
+            """, const_secs)
+        except Exception:
+            pass
+
         if auto_fs and not HEADLESS:
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
@@ -591,6 +615,16 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             if flags.get("sel"):
                 safe_save_progress(driver, series, season, current_episode)
                 cleanup_before_switch(driver)
+
+                try:
+                    driver.switch_to.default_content()
+                    driver.execute_script(
+                        "document.cookie = 'bw_series=' + encodeURIComponent(arguments[0]) + '; path=/';",
+                        flags["sel"]
+                    )
+                finally:
+                    ensure_video_context(driver)
+
                 user_switched = True
                 break
 
@@ -679,9 +713,9 @@ def play_episodes_loop(driver, series, season, episode, position=0):
 
                     # Fullscreen bei Änderung direkt toggeln
                     try:
-                        const_fs = driver.execute_script(
-                            "return !!(document.fullscreenElement || document.webkitFullscreenElement)"
-                        )
+                        driver.switch_to.default_content()
+                        const_fs = driver.execute_script("return !!document.fullscreenElement")
+                        ensure_video_context(driver)
                         if auto_fs and not const_fs and not HEADLESS:
                             _hide_sidebar(driver, True)
                             ensure_video_context(driver)
@@ -722,9 +756,6 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     ensure_video_context(driver)
                 if str(flags["del"]) == series:
                     break
-
-            if flags.get("sel"):
-                break
 
             if not ensure_video_context(driver):
                 time.sleep(0.2)
@@ -844,6 +875,22 @@ def _hide_sidebar(driver, hide: bool):
         except:
             pass
 
+def _arm_iframe_for_fullscreen(driver, iframe_el):
+    """Sorgt dafür, dass das Iframe Fullscreen darf (allow/allowfullscreen).
+       Wir ändern nur Attribute im Top-DOM, kein Cross-Origin nötig."""
+    try:
+        driver.execute_script("""
+            const f = arguments[0];
+            try {
+                const cur = (f.getAttribute('allow') || '');
+                const need = ['fullscreen *','autoplay *'];
+                const merged = Array.from(new Set(cur.split(';').map(s=>s.trim()).filter(Boolean).concat(need))).join('; ');
+                f.setAttribute('allow', merged);
+            } catch(_) {}
+            try { f.setAttribute('allowfullscreen',''); } catch(_) {}
+        """, iframe_el)
+    except Exception:
+        pass
 
 # === VIDEO FUNCTIONS ===
 def exit_fullscreen(driver):
@@ -927,10 +974,30 @@ def pause_video(driver):
 
 def enable_fullscreen(driver):
     try:
-        ensure_video_context(driver)  # <<< zur Sicherheit
+        ensure_video_context(driver)
         if _is_fullscreen(driver):
             return True
         _reveal_controls(driver)
+
+        for sel in [
+            '.jw-icon-fullscreen',       
+            '.vjs-fullscreen-control',   
+            '.plyr__control--fullscreen',
+            '.shaka-fullscreen-button',  
+            'button[aria-label*="full" i]',
+            'button[title*="full" i]',
+            '[class*="fullscreen" i],[aria-label*="Vollbild" i]'
+        ]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed() and el.is_enabled():
+                    ActionChains(driver).move_to_element(el).click().perform()
+                    time.sleep(0.25)
+                    if _is_fullscreen(driver): return True
+            except Exception:
+                pass
+
+        # 1) Button klicken
         _mark_probable_fs_button(driver)
         # 1) Button klicken
         try:
@@ -963,6 +1030,46 @@ def enable_fullscreen(driver):
                 return True
         except Exception:
             pass
+
+        # 3.5) Fallback: Top-Dokument in Fullscreen (auf das Iframe-Element)
+        try:
+            # Wir sind JETZT im Video-Frame → Embed-Iframe referenzieren
+            embed_iframe = driver.execute_script("return window.frameElement || null")
+
+            driver.switch_to.default_content()
+            target_iframe = embed_iframe  # robust, unabhängig von src/about:blank/blob:
+
+            if target_iframe is not None:
+                _arm_iframe_for_fullscreen(driver, target_iframe)
+
+                # (Optional aber hilfreich) echte User-Geste: aufs Iframe klicken
+                try:
+                    ActionChains(driver).move_to_element(target_iframe).click().perform()
+                    time.sleep(0.05)
+                except Exception:
+                    pass
+
+                driver.execute_script("""
+                    const f = arguments[0];
+                    const p = (f.requestFullscreen?.() || f.webkitRequestFullscreen?.() || f.mozRequestFullScreen?.());
+                    if (p && p.catch) p.catch(()=>{});
+                """, target_iframe)
+                time.sleep(0.25)
+
+                # Im Top-DOM prüfen
+                ok = bool(driver.execute_script("return !!document.fullscreenElement"))
+                if ok:
+                    try:
+                        driver.switch_to.frame(target_iframe)
+                    except Exception:
+                        pass
+                    return True
+
+            # zurück in den Video-Frame
+            ensure_video_context(driver)
+        except Exception:
+            pass
+
         # 4) Native API (letzter Versuch)
         try:
             driver.execute_script(
@@ -1573,27 +1680,50 @@ def main() -> None:
                 except Exception:
                     pass
 
-                # Handle intro updates (from sidebar input)
+                # Handle intro updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
+                    upd = driver.execute_script("""
                         let r = localStorage.getItem('bw_intro_update');
                         if (r) localStorage.removeItem('bw_intro_update');
                         return r;
-                    """
-                    )
+                    """)
                     if upd:
                         data = json.loads(upd)
-                        ser = data.get("series")
-                        secs = data.get("seconds")
-                        if ser and isinstance(secs, (int, float)):
-                            set_intro_skip_seconds(ser, int(secs))
-                            # Liste live pushen
+                        ser_raw = data.get("series", "")
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser:
+                            set_intro_skip_seconds(ser, secs)
+
+                            # UI sofort aktualisieren
                             html = build_items_html(load_progress())
                             driver.execute_script(
                                 "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                                 html,
                             )
+
+                            # Live auf aktuell laufende Serie anwenden
+                            try:
+                                cur_ser, cur_se, cur_ep = parse_episode_info(driver.current_url or "")
+                                if cur_ser == ser and ensure_video_context(driver):
+                                    driver.execute_script("""
+                                        const v = document.querySelector('video');
+                                        const secs = arguments[0];
+                                        if (v && isFinite(v.duration)) {
+                                            const nearEnd = v.duration - v.currentTime <= 5;
+                                            if (!nearEnd && (v.currentTime + 1) < secs && secs < (v.duration - 3)) {
+                                                v.currentTime = secs;
+                                                try { v.play().catch(()=>{}); } catch(_) {}
+                                            }
+                                        }
+                                    """, secs)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
@@ -1614,6 +1744,8 @@ def main() -> None:
                         sel = unquote(sel)
                     except Exception:
                         pass
+
+                    sel = norm_series_key(sel)
 
                     # Aufräumen (beides)
                     delete_cookie(driver, "bw_series")
