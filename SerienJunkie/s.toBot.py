@@ -744,7 +744,8 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 break
 
             if flags.get("del"):
-                handle_list_item_deletion(str(flags["del"]))
+                deleted = str(flags["del"])
+                handle_list_item_deletion(deleted)
                 try:
                     driver.switch_to.default_content()
                     html = build_items_html(load_progress())
@@ -754,8 +755,21 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     )
                 finally:
                     ensure_video_context(driver)
-                if str(flags["del"]) == series:
-                    break
+
+                if deleted == series:
+                    try:
+                        cleanup_before_switch(driver)
+                        driver.switch_to.default_content()
+
+                        driver.execute_script("""
+                            try { localStorage.removeItem('bw_series'); } catch(e){}
+                            document.cookie = 'bw_series=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/';
+                        """)
+                    except Exception:
+                        pass
+
+                    safe_navigate(driver, START_URL)
+                    return
 
             if not ensure_video_context(driver):
                 time.sleep(0.2)
