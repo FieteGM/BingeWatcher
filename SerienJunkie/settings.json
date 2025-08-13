@@ -1,7 +1,7 @@
 {
-  "autoFullscreen": false,
-  "autoSkipIntro": false,
-  "autoNext": false,
+  "autoFullscreen": true,
+  "autoSkipIntro": true,
+  "autoNext": true,
   "playbackRate": 1,
   "volume": 0.5
 }
