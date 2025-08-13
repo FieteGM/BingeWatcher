@@ -103,10 +103,10 @@ def handle_list_item_deletion(name: str) -> bool:
             del db[name]
             with open(PROGRESS_DB_FILE, "w", encoding="utf-8") as f:
                 json.dump(db, f, indent=2, ensure_ascii=False)
-            logging.info(f"Serie gelöscht: {name}")
+            logging.info(f"Series deleted: {name}")
         return True
     except Exception as e:
-        logging.error(f"Löschen fehlgeschlagen: {e}")
+        logging.error(f"Deletion failed: {e}")
         return False
 
 
@@ -136,9 +136,9 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
 
 def norm_series_key(s: str) -> str:
     try:
-        return _html.unescape(str(s or '')).strip()
+        return _html.unescape(str(s or "")).strip()
     except Exception:
-        return str(s or '').strip()
+        return str(s or "").strip()
 
 
 # === BROWSER HANDLING --------------------------- ===
@@ -186,7 +186,7 @@ def start_browser() -> webdriver.Firefox:
             options.headless = True
 
         if not os.path.exists(GECKO_DRIVER_PATH):
-            raise BingeWatcherError(f"Geckodriver fehlt unter {GECKO_DRIVER_PATH}")
+            raise BingeWatcherError(f"Geckodriver missing under {GECKO_DRIVER_PATH}")
 
         service = Service(executable_path=GECKO_DRIVER_PATH)
         driver = webdriver.Firefox(service=service, options=options)
@@ -199,14 +199,13 @@ def start_browser() -> webdriver.Firefox:
 
         move_to_primary_and_maximize(driver)
 
-        driver.set_window_size(1920, 1080)
         logging.info(
-            f"Browser gestartet. Profil: {profile_path} | Tor: {'an' if USE_TOR_PROXY else 'aus'}"
+            f"Browser started. Profile: {profile_path} | Tor: {'on' if USE_TOR_PROXY else 'off'}"
         )
         return driver
     except Exception as e:
-        logging.error(f"Browserstart fehlgeschlagen: {e}")
-        raise BingeWatcherError("Browserstart fehlgeschlagen")
+        logging.error(f"Browser startup failed: {e}")
+        raise BingeWatcherError("Browser startup failed")
 
 
 def move_to_primary_and_maximize(driver):
@@ -553,14 +552,17 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         try:
             const_ser = series  # aus umgebendem Scope
             const_secs = get_intro_skip_seconds(const_ser)
-            driver.execute_script("""
+            driver.execute_script(
+                """
                 const v = document.querySelector('video');
                 const secs = arguments[0];
                 if (v && isFinite(v.duration) && v.currentTime < secs && secs < (v.duration - 3)) {
                     v.currentTime = secs;
                     try { v.play().catch(()=>{}); } catch(_) {}
                 }
-            """, const_secs)
+            """,
+                const_secs,
+            )
         except Exception:
             pass
 
@@ -609,6 +611,35 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         user_switched = False
         last_save = time.time()
 
+        try:
+            cur_pos = 0
+            try:
+                if ensure_video_context(driver):
+                    cur_pos = int(
+                        driver.execute_script(
+                            "return (document.querySelector('video')?.currentTime||0)"
+                        )
+                        or 0
+                    )
+            except Exception:
+                cur_pos = 0
+
+            save_progress(series, season, current_episode, cur_pos)
+
+            driver.switch_to.default_content()
+            html = build_items_html(load_progress())
+            driver.execute_script(
+                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                html,
+            )
+        except Exception:
+            pass
+        finally:
+            try:
+                ensure_video_context(driver)
+            except Exception:
+                pass
+
         while True:
             flags = poll_ui_flags(driver)
 
@@ -620,7 +651,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     driver.switch_to.default_content()
                     driver.execute_script(
                         "document.cookie = 'bw_series=' + encodeURIComponent(arguments[0]) + '; path=/';",
-                        flags["sel"]
+                        flags["sel"],
                     )
                 finally:
                     ensure_video_context(driver)
@@ -714,7 +745,9 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     # Fullscreen bei Änderung direkt toggeln
                     try:
                         driver.switch_to.default_content()
-                        const_fs = driver.execute_script("return !!document.fullscreenElement")
+                        const_fs = driver.execute_script(
+                            "return !!document.fullscreenElement"
+                        )
                         ensure_video_context(driver)
                         if auto_fs and not const_fs and not HEADLESS:
                             _hide_sidebar(driver, True)
@@ -761,10 +794,12 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         cleanup_before_switch(driver)
                         driver.switch_to.default_content()
 
-                        driver.execute_script("""
+                        driver.execute_script(
+                            """
                             try { localStorage.removeItem('bw_series'); } catch(e){}
                             document.cookie = 'bw_series=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/';
-                        """)
+                        """
+                        )
                     except Exception:
                         pass
 
@@ -889,11 +924,13 @@ def _hide_sidebar(driver, hide: bool):
         except:
             pass
 
+
 def _arm_iframe_for_fullscreen(driver, iframe_el):
     """Sorgt dafür, dass das Iframe Fullscreen darf (allow/allowfullscreen).
-       Wir ändern nur Attribute im Top-DOM, kein Cross-Origin nötig."""
+    Wir ändern nur Attribute im Top-DOM, kein Cross-Origin nötig."""
     try:
-        driver.execute_script("""
+        driver.execute_script(
+            """
             const f = arguments[0];
             try {
                 const cur = (f.getAttribute('allow') || '');
@@ -902,9 +939,12 @@ def _arm_iframe_for_fullscreen(driver, iframe_el):
                 f.setAttribute('allow', merged);
             } catch(_) {}
             try { f.setAttribute('allowfullscreen',''); } catch(_) {}
-        """, iframe_el)
+        """,
+            iframe_el,
+        )
     except Exception:
         pass
+
 
 # === VIDEO FUNCTIONS ===
 def exit_fullscreen(driver):
@@ -994,20 +1034,21 @@ def enable_fullscreen(driver):
         _reveal_controls(driver)
 
         for sel in [
-            '.jw-icon-fullscreen',       
-            '.vjs-fullscreen-control',   
-            '.plyr__control--fullscreen',
-            '.shaka-fullscreen-button',  
+            ".jw-icon-fullscreen",
+            ".vjs-fullscreen-control",
+            ".plyr__control--fullscreen",
+            ".shaka-fullscreen-button",
             'button[aria-label*="full" i]',
             'button[title*="full" i]',
-            '[class*="fullscreen" i],[aria-label*="Vollbild" i]'
+            '[class*="fullscreen" i],[aria-label*="Vollbild" i]',
         ]:
             try:
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 if el.is_displayed() and el.is_enabled():
                     ActionChains(driver).move_to_element(el).click().perform()
                     time.sleep(0.25)
-                    if _is_fullscreen(driver): return True
+                    if _is_fullscreen(driver):
+                        return True
             except Exception:
                 pass
 
@@ -1058,16 +1099,21 @@ def enable_fullscreen(driver):
 
                 # (Optional aber hilfreich) echte User-Geste: aufs Iframe klicken
                 try:
-                    ActionChains(driver).move_to_element(target_iframe).click().perform()
+                    ActionChains(driver).move_to_element(
+                        target_iframe
+                    ).click().perform()
                     time.sleep(0.05)
                 except Exception:
                     pass
 
-                driver.execute_script("""
+                driver.execute_script(
+                    """
                     const f = arguments[0];
                     const p = (f.requestFullscreen?.() || f.webkitRequestFullscreen?.() || f.mozRequestFullScreen?.());
                     if (p && p.catch) p.catch(()=>{});
-                """, target_iframe)
+                """,
+                    target_iframe,
+                )
                 time.sleep(0.25)
 
                 # Im Top-DOM prüfen
@@ -1592,12 +1638,12 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 # === MAIN ===
 def main() -> None:
     global should_quit
-    logging.info("BingeWatcher startet…")
+    logging.info("BingeWatcher is starting...")
     driver: Optional[webdriver.Firefox] = None
     try:
         driver = start_browser()
         if not safe_navigate(driver, START_URL):
-            raise BingeWatcherError("Startseite konnte nicht geladen werden")
+            raise BingeWatcherError("Home page could not be loaded")
 
         while not should_quit:
             try:
@@ -1696,11 +1742,13 @@ def main() -> None:
 
                 # Handle intro updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script("""
+                    upd = driver.execute_script(
+                        """
                         let r = localStorage.getItem('bw_intro_update');
                         if (r) localStorage.removeItem('bw_intro_update');
                         return r;
-                    """)
+                    """
+                    )
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
@@ -1723,9 +1771,12 @@ def main() -> None:
 
                             # Live auf aktuell laufende Serie anwenden
                             try:
-                                cur_ser, cur_se, cur_ep = parse_episode_info(driver.current_url or "")
+                                cur_ser, cur_se, cur_ep = parse_episode_info(
+                                    driver.current_url or ""
+                                )
                                 if cur_ser == ser and ensure_video_context(driver):
-                                    driver.execute_script("""
+                                    driver.execute_script(
+                                        """
                                         const v = document.querySelector('video');
                                         const secs = arguments[0];
                                         if (v && isFinite(v.duration)) {
@@ -1735,7 +1786,9 @@ def main() -> None:
                                                 try { v.play().catch(()=>{}); } catch(_) {}
                                             }
                                         }
-                                    """, secs)
+                                    """,
+                                        secs,
+                                    )
                             except Exception:
                                 pass
                 except Exception:
@@ -1806,11 +1859,11 @@ def main() -> None:
                 should_quit = True
                 break
             except Exception as e:
-                logging.warning(f"Main-Loop Warnung: {e}")
+                logging.warning(f"Main-Loop Warning: {e}")
                 time.sleep(1.2)
 
     except KeyboardInterrupt:
-        logging.info("Vom Benutzer unterbrochen")
+        logging.info("Interrupted by user")
     except Exception as e:
         logging.error(f"Fatal: {e}")
     finally:
@@ -1819,7 +1872,7 @@ def main() -> None:
                 driver.quit()
         except Exception:
             pass
-        logging.info("BingeWatcher beendet")
+        logging.info("BingeWatcher finished")
 
 
 if __name__ == "__main__":
