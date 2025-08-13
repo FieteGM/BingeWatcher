@@ -92,7 +92,7 @@ def save_progress(
             json.dump(db, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        logging.error(f"Fehler beim Speichern des Fortschritts: {e}")
+        logging.error(f"Error saving progress: {e}")
         return False
 
 
@@ -134,7 +134,7 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
         return False
 
 
-# === BROWSER ===
+# === BROWSER HANDLING --------------------------- ===
 def start_browser() -> webdriver.Firefox:
     try:
         profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
@@ -153,7 +153,14 @@ def start_browser() -> webdriver.Firefox:
         options.set_preference("browser.tabs.warnOnClose", False)
         options.set_preference("browser.warnOnQuit", False)
         options.set_preference("browser.sessionstore.warnOnQuit", False)
-        # Autoplay möglichst erlauben
+
+        options.set_preference("full-screen-api.enabled", True)
+        options.set_preference("full-screen-api.allow-trusted-requests-only", False)
+        options.set_preference("layers.acceleration.disabled", True)
+        options.set_preference("gfx.webrender.force-disabled", True)
+        options.set_preference("media.wmf.dxva.enabled", False)
+        options.set_preference("media.eme.enabled", True)
+        options.set_preference("media.gmp-widevinecdm.enabled", True)
         options.set_preference("media.autoplay.default", 0)
         options.set_preference("media.block-autoplay-until-in-foreground", False)
         options.set_preference("media.autoplay.blocking_policy", 0)
@@ -169,7 +176,7 @@ def start_browser() -> webdriver.Firefox:
             options.set_preference("network.proxy.socks_remote_dns", True)
 
         if HEADLESS:
-            options.add_argument("--headless")
+            options.headless = True
 
         if not os.path.exists(GECKO_DRIVER_PATH):
             raise BingeWatcherError(f"Geckodriver fehlt unter {GECKO_DRIVER_PATH}")
@@ -255,10 +262,10 @@ def safe_navigate(
             return True
         except WebDriverException as e:
             logging.warning(
-                f"Navigation fehlgeschlagen (Versuch {attempt + 1}/{max_retries}): {e}"
+                f"Navigation failed (attempt {attempt + 1}/{max_retries}): {e}"
             )
             time.sleep(2)
-    logging.error(f"Navigation zu {url} nach {max_retries} Versuchen gescheitert")
+    logging.error(f"Navigation to {url} failed after {max_retries} attempts")
     return False
 
 
@@ -270,9 +277,7 @@ def is_browser_responsive(driver: webdriver.Firefox) -> bool:
         return False
 
 
-# === SETTINGS ===
-
-
+# === SETTINGS HANDLING --------------------------- ===
 def get_settings(driver):
     file_s = load_settings_file()
     ls_s = read_settings(driver) or {}
@@ -285,16 +290,6 @@ def get_settings(driver):
     merged["volume"] = float(merged.get("volume", 1))
 
     return merged
-
-
-def _default_settings() -> Dict[str, Any]:
-    return {
-        "autoFullscreen": True,
-        "autoSkipIntro": True,
-        "autoNext": True,
-        "playbackRate": 1.0,
-        "volume": 1.0,
-    }
 
 
 def load_settings_file() -> Dict[str, Any]:
@@ -325,7 +320,7 @@ def save_settings_file(settings: Dict[str, Any]) -> bool:
             json.dump(d, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        logging.error(f"Settings speichern fehlgeschlagen: {e}")
+        logging.error(f"Saving settings failed: {e}")
         return False
 
 
@@ -353,57 +348,17 @@ def sync_settings_to_localstorage(driver):
         logging.debug(f"sync_settings_to_localstorage: {e}")
 
 
-# === VIDEO ===
-def exit_fullscreen(driver):
-    try:
-        driver.switch_to.default_content()
-        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        time.sleep(0.5)
-    except:
-        pass
+def _default_settings() -> Dict[str, Any]:
+    return {
+        "autoFullscreen": True,
+        "autoSkipIntro": True,
+        "autoNext": True,
+        "playbackRate": 1.0,
+        "volume": 1.0,
+    }
 
 
-def switch_to_video_frame(driver):
-    try:
-        iframe = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.TAG_NAME, "iframe"))
-        )
-        driver.switch_to.frame(iframe)
-        return True
-    except:
-        print("[!] Video iframe not found.")
-        return False
-
-
-def is_video_playing(driver):
-    return driver.execute_script(
-        """
-        const video = document.querySelector('video');
-        return video && !video.paused && video.readyState > 2;
-    """
-    )
-
-
-def play_video(driver):
-    try:
-        video = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.TAG_NAME, "video"))
-        )
-        ActionChains(driver).move_to_element(video).click().perform()
-    except Exception as e:
-        print(f"[!] Could not start video: {e}")
-
-
-def enable_fullscreen(driver):
-    driver.execute_script(
-        """
-        const video = document.querySelector('video');
-        if (video.requestFullscreen) video.requestFullscreen();
-        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-    """
-    )
-
-
+# === NAVIGATION HANDLING --------------------------- ===
 def parse_episode_info(url):
     match = re.search(r"/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)", url)
     if match:
@@ -418,75 +373,88 @@ def navigate_to_episode(driver, series, season, episode, db):
     inject_sidebar(driver, db)
 
 
-def skip_intro(driver, seconds):
-    WebDriverWait(driver, 15).until(
-        lambda d: d.execute_script(
-            "return document.querySelector('video')?.readyState > 0;"
-        )
-    )
-    driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
+    """Search up to depth 2 for a <video> and switch to the appropriate frame."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            driver.switch_to.default_content()
+            if driver.execute_script("return !!document.querySelector('video')"):
+                return True
+        except Exception:
+            pass
 
+        try:
+            frames_lvl1 = driver.find_elements(By.TAG_NAME, "iframe")
+        except Exception:
+            frames_lvl1 = []
 
-def get_current_position(driver):
-    return driver.execute_script(
-        "return document.querySelector('video').currentTime || 0;"
-    )
+        for f1 in frames_lvl1:
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(f1)
+                if driver.execute_script("return !!document.querySelector('video')"):
+                    return True
 
+                try:
+                    frames_lvl2 = driver.find_elements(By.TAG_NAME, "iframe")
+                except Exception:
+                    frames_lvl2 = []
+                for f2 in frames_lvl2:
+                    try:
+                        driver.switch_to.frame(f2)
+                        if driver.execute_script(
+                            "return !!document.querySelector('video')"
+                        ):
+                            return True
+                    finally:
+                        driver.switch_to.parent_frame()
+            except Exception:
+                pass
 
-# === TEST --------------------------- ===
-def pull_ls_flag(driver, key: str):
-    """Liest localStorage[key] IM TOP-WINDOW, löscht es dort und gibt den Wert zurück."""
-    try:
-        driver.switch_to.default_content()
-        val = driver.execute_script(
-            """
-            try {
-                const k = arguments[0];
-                const v = localStorage.getItem(k);
-                if (v !== null) localStorage.removeItem(k);
-                return v;
-            } catch(e){ return null; }
-        """,
-            key,
-        )
-        return val
-    except Exception:
-        return None
-
-
-def has_cookie_flag(driver, name: str) -> bool:
-    """Prüft Cookie im Top-Window (gleiche Origin wie Sidebar)."""
-    try:
-        driver.switch_to.default_content()
-        return get_cookie(driver, name) == "1"
-    except Exception:
-        return False
-
-
-def clear_cookie_flag(driver, name: str):
-    try:
-        driver.switch_to.default_content()
-        delete_cookie(driver, name)
-    except Exception:
-        pass
+        time.sleep(0.25)
+    return False
 
 
 def ensure_video_context(driver) -> bool:
-    """Zurück in den Iframe wechseln, falls nötig."""
     try:
-        # wenn bereits ein <video> sichtbar ist, okay
-        ok = driver.execute_script("return !!document.querySelector('video');")
-        if ok:
-            return True
-    except Exception:
-        pass
-    try:
-        return switch_to_video_frame(driver)
+        return find_and_switch_to_video_frame(driver, timeout=6)
     except Exception:
         return False
 
 
-# === TEST --------------------------- ===
+def safe_save_progress(driver, series, season, episode) -> int:
+    pos = 0
+    try:
+        if ensure_video_context(driver):
+            try:
+                pos = int(
+                    driver.execute_script(
+                        "return (document.querySelector('video')?.currentTime||0)"
+                    )
+                )
+            except Exception:
+                pos = 0
+        save_progress(series, season, episode, pos)
+    except Exception:
+        pass
+    return pos
+
+
+def cleanup_before_switch(driver):
+    try:
+        try:
+            if ensure_video_context(driver):
+                pause_video(driver)
+        except Exception:
+            pass
+        exit_fullscreen(driver)
+        _hide_sidebar(driver, False)
+        time.sleep(0.2)
+    except Exception:
+        pass
+
+
 def poll_ui_flags(driver):
     driver.switch_to.default_content()
     return driver.execute_script(
@@ -499,6 +467,37 @@ def poll_ui_flags(driver):
       return out;
     """
     )
+
+
+def popout_player_iframe(driver) -> bool:
+    """Opens the src of the first relevant iframe in the same tab. Returns true if navigation occurred.."""
+    try:
+        driver.switch_to.default_content()
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        if not iframes:
+            return False
+
+        best, area = None, 0
+        for fr in iframes:
+            try:
+                r = fr.rect
+                a = r.get("width", 0) * r.get("height", 0)
+                if a > area:
+                    best, area = fr, a
+            except Exception:
+                pass
+        if not best:
+            return False
+        src = best.get_attribute("src") or ""
+        if not src or src.startswith("about:"):
+            return False
+        driver.get(src)
+        WebDriverWait(driver, 10).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        return True
+    except Exception:
+        return False
 
 
 def play_episodes_loop(driver, series, season, episode, position=0):
@@ -520,53 +519,121 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         navigate_to_episode(driver, series, season, current_episode, db)
         sync_settings_to_localstorage(driver)
 
-        if not switch_to_video_frame(driver):
-            break
+        if not ensure_video_context(driver):
+            ok_ctx = False
+            for _ in range(3):
+                time.sleep(0.4)
+                if ensure_video_context(driver):
+                    ok_ctx = True
+                    break
+            if not ok_ctx:
+                break
 
-        if not is_video_playing(driver):
-            play_video(driver)
+        play_video(driver)
 
-        # playback rate
-        try:
-            driver.execute_script(
-                "const v=document.querySelector('video'); if(v){ v.playbackRate = arguments[0]; }",
-                rate,
-            )
-        except Exception:
-            pass
-
-        # volume
-        try:
-            driver.execute_script(
-                "const v=document.querySelector('video'); if(v){ v.volume = arguments[0]; v.muted = (arguments[0] === 0); }",
-                vol,
-            )
-        except Exception:
-            pass
-
-        # intro skip: prefer resume position; else setting-based skip
         if position and position > 0:
             skip_intro(driver, position)
         elif auto_skip:
             skip_intro(driver, get_intro_skip_seconds(series))
         position = 0
 
-        # fullscreen if enabled
-        if auto_fs:
-            time.sleep(0.12)
-            enable_fullscreen(driver)
-            try:
-                if not driver.execute_script(
-                    "return !!(document.fullscreenElement || document.webkitFullscreenElement)"
-                ):
-                    ActionChains(driver).send_keys("f").perform()
-            except Exception:
-                pass
+        play_video(driver)
+        apply_media_settings(driver, rate, vol)
 
+        if auto_fs and not HEADLESS:
+            _hide_sidebar(driver, True)
+            ensure_video_context(driver)
+            time.sleep(0.25)
+            ok = enable_fullscreen(driver)
+            if not ok and os.getenv("BW_POPOUT_IFRAME", "false").lower() in {
+                "1",
+                "true",
+                "yes",
+            }:
+                if popout_player_iframe(driver):
+                    ensure_video_context(driver)
+                    _hide_sidebar(driver, True)
+                    ensure_video_context(driver)
+                    time.sleep(0.25)
+                    ok = enable_fullscreen(driver)
+
+        try:
+            for _ in range(12):
+                playing = driver.execute_script(
+                    "const v=document.querySelector('video'); return !!(v && !v.paused && v.readyState>2);"
+                )
+                if playing:
+                    break
+                driver.execute_script(
+                    "const v=document.querySelector('video'); if(v){ try{ v.focus(); v.play().catch(()=>{}); }catch(e){} }"
+                )
+                time.sleep(0.2)
+        except Exception:
+            pass
+
+        initial_src = ""
+        try:
+            initial_src = (
+                driver.execute_script(
+                    "const v=document.querySelector('video');return v?(v.currentSrc||v.src||''):'';"
+                )
+                or ""
+            )
+        except Exception:
+            pass
+
+        user_switched = False
         last_save = time.time()
 
         while True:
             flags = poll_ui_flags(driver)
+
+            if flags.get("sel"):
+                safe_save_progress(driver, series, season, current_episode)
+                cleanup_before_switch(driver)
+                user_switched = True
+                break
+
+            try:
+                driver.switch_to.default_content()
+                cur_url = driver.current_url or ""
+                s2, se2, ep2 = parse_episode_info(cur_url)
+                if s2 and (s2 != series or se2 != season or ep2 != current_episode):
+                    safe_save_progress(driver, series, season, current_episode)
+                    cleanup_before_switch(driver)
+                    user_switched = True
+                    break
+            finally:
+                ensure_video_context(driver)
+
+            try:
+                cur_src = (
+                    driver.execute_script(
+                        "const v=document.querySelector('video');return v?(v.currentSrc||v.src||''):'';"
+                    )
+                    or ""
+                )
+                if initial_src and cur_src and cur_src != initial_src:
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            lambda d: d.execute_script(
+                                "return document.querySelector('video')?.readyState>0;"
+                            )
+                        )
+                    except Exception:
+                        pass
+                    apply_media_settings(driver, rate, vol)
+
+                    try:
+                        if auto_fs:
+                            _hide_sidebar(driver, True)
+                            ensure_video_context(driver)
+                            enable_fullscreen(driver)
+                    except Exception:
+                        pass
+                    initial_src = cur_src
+            except Exception:
+                pass
 
             # --- LIVE SETTINGS UPDATE ---------------------------------------
             try:
@@ -603,13 +670,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     # Sofort auf das Video anwenden
                     try:
                         if ensure_video_context(driver):
-                            driver.execute_script("""
-                                const v = document.querySelector('video');
-                                if (!v) return;
-                                if (v.playbackRate !== arguments[0]) v.playbackRate = arguments[0];
-                                if (Math.abs(v.volume - arguments[1]) > 0.001) v.volume = arguments[1];
-                                v.muted = (arguments[1] === 0);
-                            """, rate, vol)
+                            apply_media_settings(driver, rate, vol)
                     finally:
                         try:
                             driver.switch_to.default_content()
@@ -621,10 +682,14 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         const_fs = driver.execute_script(
                             "return !!(document.fullscreenElement || document.webkitFullscreenElement)"
                         )
-                        if auto_fs and not const_fs:
+                        if auto_fs and not const_fs and not HEADLESS:
+                            _hide_sidebar(driver, True)
+                            ensure_video_context(driver)
+                            time.sleep(0.45)
                             enable_fullscreen(driver)
                         elif not auto_fs and const_fs:
                             exit_fullscreen(driver)
+                            _hide_sidebar(driver, False)
                     except Exception:
                         pass
 
@@ -700,9 +765,13 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             time.sleep(1.0)
 
         exit_fullscreen(driver)
+        _hide_sidebar(driver, False)
         time.sleep(0.5)
 
         if should_quit:
+            return
+
+        if user_switched:
             return
 
         if not auto_next:
@@ -713,6 +782,277 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         continue
 
 
+def _reveal_controls(driver):
+    try:
+        v = WebDriverWait(driver, 3).until(
+            EC.presence_of_element_located((By.TAG_NAME, "video"))
+        )
+        ActionChains(driver).move_to_element(v).pause(0.05).move_by_offset(
+            0, 0
+        ).perform()
+        time.sleep(0.1)
+    except Exception:
+        pass
+
+
+def _mark_probable_fs_button(driver):
+    """Markiere wahrscheinlichen Vollbild-Button mit data-bw-fullscreen='1' (Heuristik)."""
+    driver.execute_script(
+        """
+        const v = document.querySelector('video'); if (!v) return;
+        const vr = v.getBoundingClientRect();
+        const cand = Array.from(document.querySelectorAll('button,[role="button"],[class*="control"],[class*="fullscreen"],[aria-label],[title]'));
+        let best=null, score=-1;
+        const labelHit = el => ((el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'')+' '+(el.className||'')).toLowerCase().match(/vollbild|full.?screen|fullscreen|maximi/);
+        const vis = el => { const s=getComputedStyle(el); const r=el.getBoundingClientRect(); return s.visibility!=='hidden' && s.display!=='none' && r.width>12 && r.height>12;};
+        cand.forEach(el=>{
+            if (!vis(el)) return;
+            const r=el.getBoundingClientRect();
+            // Nähe zur rechten unteren Ecke des Videos
+            const cx=(r.left+r.right)/2, cy=(r.top+r.bottom)/2;
+            let s = -Math.hypot(cx-vr.right, cy-vr.bottom);
+            if (labelHit(el)) s += 500;
+            if ((el.className||'').toLowerCase().includes('full')) s += 250;
+            if (r.right < vr.left-20 || r.left > vr.right+20 || r.bottom < vr.top-20 || r.top > vr.bottom+20) s -= 200; // außerhalb
+            if (s>score){ score=s; best=el; }
+        });
+        if (best) best.setAttribute('data-bw-fullscreen','1');
+    """
+    )
+
+
+def _hide_sidebar(driver, hide: bool):
+    try:
+        driver.switch_to.default_content()
+        if hide:
+            driver.execute_script(
+                """
+                const s = document.getElementById('bingeSidebar');
+                if (s){ s.dataset._prevDisplay = s.style.display || ''; s.style.display = 'none'; }
+            """
+            )
+        else:
+            driver.execute_script(
+                """
+                const s = document.getElementById('bingeSidebar');
+                if (s){ s.style.display = s.dataset._prevDisplay || ''; delete s.dataset._prevDisplay; }
+            """
+            )
+    finally:
+        try:
+            ensure_video_context(driver)
+        except:
+            pass
+
+
+# === VIDEO FUNCTIONS ===
+def exit_fullscreen(driver):
+    try:
+        driver.switch_to.default_content()
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        time.sleep(0.5)
+    except:
+        pass
+
+
+def switch_to_video_frame(driver):
+    try:
+        iframe = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.TAG_NAME, "iframe"))
+        )
+        driver.switch_to.frame(iframe)
+        return True
+    except:
+        print("[!] Video iframe not found.")
+        return False
+
+
+def play_video(driver):
+    """Start robust: Overlays klicken, Video fokusieren, play() als Fallback."""
+    try:
+        # Wir sind im iframe (ensure_video_context vorher!)
+        driver.execute_script(
+            "const v=document.querySelector('video'); if(v){ v.muted=true; }"
+        )
+
+        # 1) typische Overlay-Buttons
+        overlay_selectors = [
+            ".vjs-big-play-button",
+            ".jw-display-icon-container",
+            ".jw-display",
+            ".plyr__control--overlaid",
+            'button[aria-label*="Play" i]',
+            'button[class*="play"]',
+            ".shaka-play-button",
+        ]
+        for sel in overlay_selectors:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed() and el.is_enabled():
+                    ActionChains(driver).move_to_element(el).click().perform()
+                    time.sleep(0.15)
+                    break
+            except Exception:
+                pass
+
+        # 2) direkt auf das <video> klicken
+        v = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "video"))
+        )
+        ActionChains(driver).move_to_element(v).click().perform()
+        time.sleep(0.05)
+
+        # 3) explizit play() (Promise ignorieren)
+        driver.execute_script(
+            """
+            const v=document.querySelector('video');
+            if (v && v.paused) { try{ v.play().catch(()=>{}); }catch(e){} }
+        """
+        )
+    except Exception as e:
+        print(f"[!] Could not start video: {e}")
+
+
+def pause_video(driver):
+    try:
+        driver.execute_script(
+            """
+            const v=document.querySelector('video');
+            if (v) { try{ v.pause(); }catch(e){} }
+        """
+        )
+    except Exception:
+        pass
+
+
+def enable_fullscreen(driver):
+    try:
+        ensure_video_context(driver)  # <<< zur Sicherheit
+        if _is_fullscreen(driver):
+            return True
+        _reveal_controls(driver)
+        _mark_probable_fs_button(driver)
+        # 1) Button klicken
+        try:
+            btn = driver.find_element(By.CSS_SELECTOR, '[data-bw-fullscreen="1"]')
+            ActionChains(driver).move_to_element(btn).click().perform()
+            time.sleep(0.2)
+            if _is_fullscreen(driver):
+                return True
+        except Exception:
+            pass
+        # 2) Doppelklick
+        try:
+            v = WebDriverWait(driver, 2).until(
+                EC.presence_of_element_located((By.TAG_NAME, "video"))
+            )
+            ActionChains(driver).move_to_element(v).double_click().perform()
+            time.sleep(0.2)
+            if _is_fullscreen(driver):
+                return True
+        except Exception:
+            pass
+        # 3) 'f'
+        try:
+            driver.execute_script(
+                "const v=document.querySelector('video'); if(v){ v.tabIndex=0; v.focus(); }"
+            )
+            ActionChains(driver).send_keys("f").pause(0.05).perform()
+            time.sleep(0.2)
+            if _is_fullscreen(driver):
+                return True
+        except Exception:
+            pass
+        # 4) Native API (letzter Versuch)
+        try:
+            driver.execute_script(
+                """
+                const doc=document, v=document.querySelector('video'); if(!v) return;
+                let el=v; for(let i=0;i<3 && el && el.parentElement; i++) el=el.parentElement;
+                const tgt=el||v; const p=(tgt.requestFullscreen?.()||tgt.webkitRequestFullscreen?.()||tgt.mozRequestFullScreen?.());
+                if (p && p.catch) p.catch(()=>{});
+            """
+            )
+            time.sleep(0.15)
+        except Exception:
+            pass
+        return _is_fullscreen(driver)
+    except Exception:
+        return False
+
+
+def apply_media_settings(driver, rate, vol):
+    """Setzt playbackRate/Volume/Unmute sofort und hält sie kurzzeitig stabil (Events/Interval)."""
+    try:
+        driver.execute_script(
+            """
+            const rate = arguments[0], vol = arguments[1];
+            const v = document.querySelector('video');
+            if (!v) return;
+
+            const setit = () => {
+              try {
+                // manche Player setzen 'muted' als Attribut → komplett entfernen
+                v.removeAttribute('muted');
+                v.defaultMuted = false;
+                v.muted = (vol === 0);
+                if (v.volume !== vol) v.volume = vol;
+                if (v.playbackRate !== rate) v.playbackRate = rate;
+              } catch(_) {}
+            };
+
+            setit();
+
+            // für einige Sekunden „gegenhalten“, falls src/MSE/Player neu setzt
+            if (!v.__bwPin){
+            v.__bwPin = true;
+            const evs = ['loadedmetadata','canplay','playing','ratechange','volumechange','stalled'];
+            evs.forEach(e => v.addEventListener(e, setit, {passive:true}));
+
+            const cleanup = () => {
+                try { evs.forEach(e => v.removeEventListener(e, setit)); } catch(_){}
+                v.__bwPin = false;
+            };
+
+            let n = 0;
+            const iv = setInterval(()=>{ setit(); if (++n > 20) { clearInterval(iv); cleanup(); } }, 150);
+            setTimeout(()=>{ try{ clearInterval(iv); cleanup(); }catch(_){} }, 4000);
+            }
+        """,
+            rate,
+            vol,
+        )
+    except Exception:
+        pass
+
+
+def skip_intro(driver, seconds):
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script(
+            "return document.querySelector('video')?.readyState > 0;"
+        )
+    )
+    driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+
+
+def get_current_position(driver):
+    return driver.execute_script(
+        "return document.querySelector('video').currentTime || 0;"
+    )
+
+
+def _is_fullscreen(driver) -> bool:
+    try:
+        return bool(
+            driver.execute_script(
+                "return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);"
+            )
+        )
+    except Exception:
+        return False
+
+
+# === COOKIE FUNCTIONS --------------------------- ===
 def delete_cookie(driver: webdriver.Firefox, name: str) -> bool:
     try:
         driver.delete_cookie(name)
@@ -728,7 +1068,7 @@ def get_cookie(driver, name):
     return None
 
 
-# === SETTINGS (UI) ===
+# === SIDEBAR FUNCTIONS --------------------------- ===
 def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     try:
         data = driver.execute_script(
@@ -817,9 +1157,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   </button>
 
                   <div style="margin-top:12px;display:flex;gap:8px;">
-                  <input id="bwSearch" placeholder="Suche…" style="flex:1;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
+                  <input id="bwSearch" placeholder="Search..." style="flex:1;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
                   <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;">
-                      <option value="time">Zuletzt gesehen</option>
+                      <option value="time">Last watched</option>
                       <option value="name">Name</option>
                   </select>
                   </div>
@@ -829,35 +1169,41 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   <div id="bwSeriesList" style="display:flex;flex-direction:column;gap:6px;"></div>
               </div>
               `;
-
+              
               (document.body||document.documentElement).appendChild(d);
+
+              document.addEventListener('fullscreenchange', ()=>{
+                const sb = document.getElementById('bingeSidebar');
+                if (!sb) return;
+                if (document.fullscreenElement) {
+                    sb.style.display = 'none';
+                } else {
+                    sb.style.display = '';
+                }
+              }, {passive:true});
 
               const style = document.createElement('style');
               style.textContent = `
               #bingeSidebar{ width:340px; transition: transform .28s cubic-bezier(.22,.61,.36,1); box-shadow:0 10px 30px rgba(0,0,0,.35); overflow:visible; }
+  
               /* Collapsed: 56px sichtbar lassen */
               #bingeSidebar[data-collapsed="1"]{ transform: translateX(calc(-100% + 56px)); }
-              #bingeSidebar[data-collapsed="1"]:hover{
-                transform: translateX(calc(-100% + 92px)); /* 56 + 36 (Handlebreite) */
+  
+              /* PEEK - bei Hover ODER wenn JS data-peek="1" setzt */
+              #bingeSidebar[data-collapsed="1"]:is(:hover,[data-peek="1"]){
+                transform: translateX(calc(-100% + 92px)); /* 56 + ~36 (Handlebreite) */
               }
-              /* --- PEEK wenn Handle gehovert wird --- */
-              #bingeSidebar[data-collapsed="1"][data-peek="1"]{
-                  transform: translateX(calc(-100% + 92px)); /* etwas weiter rausfahren */
-              }
-
-              #bingeSidebar[data-collapsed="1"]:hover .bw-body{
-                opacity:.35; pointer-events:none;
-              }
-
+  
+              /* Handle stets oben */
               #bingeSidebar .bw-handle{ z-index:5; }
-
+  
               /* Action-Buttons */
               #bingeSidebar .bw-btn{
-                  width:36px;height:36px;border-radius:12px;border:1px solid rgba(148,163,184,.22);
-                  background:rgba(148,163,184,.10); color:#cbd5e1; cursor:pointer;
-                  display:flex;align-items:center;justify-content:center;
-                  box-shadow:inset 0 -1px rgba(255,255,255,.06);
-                  transition: border-color .2s, background .2s, transform .15s;
+                width:36px;height:36px;border-radius:12px;border:1px solid rgba(148,163,184,.22);
+                background:rgba(148,163,184,.10); color:#cbd5e1; cursor:pointer;
+                display:flex;align-items:center;justify-content:center;
+                box-shadow:inset 0 -1px rgba(255,255,255,.06);
+                transition: border-color .2s, background .2s, transform .15s;
               }
               #bingeSidebar .bw-btn:hover{ border-color:rgba(148,163,184,.38); background:rgba(148,163,184,.16); transform:translateY(-1px); }
               #bingeSidebar .bw-btn:active{ transform:translateY(0); }
@@ -866,50 +1212,61 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
   
               /* Handle */
               #bingeSidebar .bw-handle{
-                  position:absolute; top:50px; right:-18px; width:36px; height:36px; border-radius:999px;
-                  border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
-                  backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
-                  box-shadow:0 6px 20px rgba(0,0,0,.4);
-                  transition: transform .2s ease, background .2s ease, border-color .2s ease;
-                  z-index:1;
+                position:absolute; top:50px; right:-18px; width:36px; height:36px; border-radius:999px;
+                border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
+                backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
+                box-shadow:0 6px 20px rgba(0,0,0,.4);
+                transition: transform .2s ease, background .2s ease, border-color .2s ease;
               }
-              /* Größere Klickfläche, ohne Optik zu ändern */
-              #bingeSidebar .bw-handle::after{ content:""; position:absolute; inset:-8px; }
-  
+              #bingeSidebar .bw-handle::after{ content:""; position:absolute; inset:-8px; } /* größere Klickfläche */
               #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:rgba(15,23,42,.9); border-color:rgba(148,163,184,.5); }
               #bingeSidebar .chev{ font-size:16px; line-height:1; transition: transform .2s ease; }
               #bingeSidebar[data-collapsed="1"] .bw-handle .chev{ transform: rotate(180deg); }
-              #bingeSidebar[data-collapsed="1"] .bw-actions,
-              #bingeSidebar[data-collapsed="1"] #bwSearch,
-              #bingeSidebar[data-collapsed="1"] #bwSort{
-                  opacity:.0; pointer-events:none;
-              }
-              /* Body weich ausblenden */
-              #bingeSidebar .bw-body{ transition: opacity .2s ease; overflow:visible; }
+  
+              /* Body */
               #bingeSidebar .bw-body{
-                padding:12px; 
-                overflow-y:auto; 
-                height:calc(100vh - 116px); /* Headerhöhe je nach Bedarf anpassen */
+                transition: opacity .2s ease;
+                padding:12px;
+                overflow-y:auto;
+                height:calc(100vh - 116px); /* Headerhöhe anpassen falls nötig */
               }
-              #bingeSidebar[data-collapsed="1"] .bw-body{ opacity:0; pointer-events:none; }
+  
+              /* Elemente nur ausblenden, wenn wirklich collapsed UND nicht gepeekt/gehovered */
+              #bingeSidebar[data-collapsed="1"]:not(:hover):not([data-peek="1"]) .bw-actions,
+              #bingeSidebar[data-collapsed="1"]:not(:hover):not([data-peek="1"]) #bwSearch,
+              #bingeSidebar[data-collapsed="1"]:not(:hover):not([data-peek="1"]) #bwSort,
+              #bingeSidebar[data-collapsed="1"]:not(:hover):not([data-peek="1"]) .bw-body{
+                opacity:0; pointer-events:none;
+              }
+  
+              /* Beim Peek/Hover wieder einblenden (interaktiv) */
+              #bingeSidebar[data-collapsed="1"]:is(:hover,[data-peek="1"]) .bw-actions,
+              #bingeSidebar[data-collapsed="1"]:is(:hover,[data-peek="1"]) #bwSearch,
+              #bingeSidebar[data-collapsed="1"]:is(:hover,[data-peek="1"]) #bwSort,
+              #bingeSidebar[data-collapsed="1"]:is(:hover,[data-peek="1"]) .bw-body{
+                opacity:1; pointer-events:auto;
+                transition: opacity .16s ease .05s;
+              }
               `;
               d.appendChild(style);
   
               const tgl = document.getElementById('bwCollapse');
-                const setHandleTitle = () => {
+              const setHandleTitle = () => {
                 const collapsed = d.getAttribute('data-collapsed') === '1';
                 tgl.title = collapsed ? 'Ausklappen' : 'Einklappen';
               };
               if (localStorage.getItem('bw_sidebar_collapsed') === '1') d.setAttribute('data-collapsed','1');
               setHandleTitle();
-
+  
+              /* Peek via JS, wenn nur der Griff gehovert wird */
               tgl.addEventListener('mouseenter', ()=> {
                 if (d.getAttribute('data-collapsed') === '1') d.setAttribute('data-peek','1');
               });
                 tgl.addEventListener('mouseleave', ()=> {
                 d.removeAttribute('data-peek');
               });
-            
+  
+              /* Toggle */
               tgl.addEventListener('click', (e)=>{
                 e.preventDefault(); e.stopPropagation();
                 const collapsed = d.getAttribute('data-collapsed') === '1';
@@ -918,7 +1275,8 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 d.removeAttribute('data-peek');
                 setHandleTitle();
               });
-
+                
+              /* Buttons */
               const btnSkip = document.getElementById('bwSkip');
               const btnQuit = document.getElementById('bwQuit');
               if (btnSkip) btnSkip.addEventListener('click', (e)=>{
@@ -975,13 +1333,13 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       <input type="checkbox" id="bwOptAutoFullscreen"/><span>Auto-Fullscreen</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <input type="checkbox" id="bwOptAutoSkipIntro"/><span>Intro automatisch überspringen</span>
+                      <input type="checkbox" id="bwOptAutoSkipIntro"/><span>Skip intro</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <input type="checkbox" id="bwOptAutoNext" checked/><span>Nächste Episode automatisch</span>
+                      <input type="checkbox" id="bwOptAutoNext" checked/><span>Autoplay next episode</span>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <span>Geschwindigkeit</span>
+                      <span>Playback Speed</span>
                       <select id="bwOptPlaybackRate">
                         <option value="0.75">0.75x</option>
                         <option value="1" selected>1x</option>
@@ -992,12 +1350,12 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       </select>
                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                        <span>Lautstärke</span>
+                        <span>Volume</span>
                         <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
                         <span id="bwVolumeVal" style="width:40px;text-align:right;"></span>
                     </label>
                     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
-                      <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Speichern</button>
+                      <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Save</button>
                     </div>
                   `;
                   document.body.appendChild(p);
