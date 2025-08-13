@@ -59,10 +59,10 @@ def load_progress() -> Dict[str, Dict[str, Any]]:
                     return data
         return {}
     except json.JSONDecodeError:
-        logging.error("progress.json ist korrupt.")
+        logging.error("progress.json is corrupt.")
         return {}
     except Exception as e:
-        logging.error(f"Fehler beim Laden des Fortschritts: {e}")
+        logging.error(f"Error loading progress: {e}")
         return {}
 
 
@@ -130,7 +130,7 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
             json.dump(db, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        logging.error(f"Intro-Zeit konnte nicht gespeichert werden: {e}")
+        logging.error(f"Intro time could not be saved: {e}")
         return False
 
 
@@ -304,13 +304,12 @@ def load_settings_file() -> Dict[str, Any]:
             with open(SETTINGS_DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    # mit Defaults mergen (fehlende Keys auffüllen)
                     d = _default_settings()
                     d.update({k: data[k] for k in data if k in d})
                     return d
         return _default_settings()
     except Exception as e:
-        logging.warning(f"Settings laden fehlgeschlagen: {e}")
+        logging.warning(f"Settings failed to load: {e}")
         return _default_settings()
 
 
@@ -1379,7 +1378,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
   
               /* Handle */
               #bingeSidebar .bw-handle{
-                position:absolute; top:50px; right:-18px; width:36px; height:36px; border-radius:999px;
+                position:absolute; top:85px; right:-18px; width:32px; height:32px; border-radius:999px;
                 border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
                 backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
                 box-shadow:0 6px 20px rgba(0,0,0,.4);
@@ -1420,7 +1419,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               const tgl = document.getElementById('bwCollapse');
               const setHandleTitle = () => {
                 const collapsed = d.getAttribute('data-collapsed') === '1';
-                tgl.title = collapsed ? 'Ausklappen' : 'Einklappen';
+                tgl.title = collapsed ? 'Unfold' : 'Collapse';
               };
               if (localStorage.getItem('bw_sidebar_collapsed') === '1') d.setAttribute('data-collapsed','1');
               setHandleTitle();
@@ -1493,7 +1492,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   Object.assign(p.style, { position:'fixed', right:'16px', top:'64px', width:'340px', background:'rgba(2,6,23,.94)', border:'1px solid rgba(255,255,255,.12)', borderRadius:'12px', color:'#e2e8f0', padding:'16px', zIndex:2147483647 });
                   p.innerHTML = `
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                      <div style="font-weight:600">Einstellungen</div>
+                      <div style="font-weight:600">Settings</div>
                       <button id="bwCloseSettings" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">✕</button>
                     </div>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
@@ -1600,6 +1599,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 if (l) l.innerHTML = newHtml;
                 window.__bwLastHTML = newHtml;
               };
+
               function ensureSidebar(){
                 if (document.getElementById('bingeSidebar')) return;
                 try { localStorage.setItem('bw_need_reinject','1'); } catch(_){}
@@ -1631,7 +1631,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
         )
         return True
     except Exception as e:
-        logging.error(f"Sidebar-Injektion fehlgeschlagen: {e}")
+        logging.error(f"Sidebar injection failed: {e}")
         return False
 
 
@@ -1843,7 +1843,6 @@ def main() -> None:
                 ser, se, ep = parse_episode_info(driver.current_url or "")
                 if ser and se and ep:
                     sdata = load_progress().get(ser, {})
-                    # Nur resume, wenn gespeicherte Episode identisch ist:
                     if (
                         int(sdata.get("season", -1)) == se
                         and int(sdata.get("episode", -1)) == ep
