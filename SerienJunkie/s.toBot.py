@@ -15,6 +15,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
+from selenium.webdriver.common.actions.pointer_input import PointerInput
 
 # === CONFIGURATION ===
 HEADLESS: bool = os.getenv("BW_HEADLESS", "false").lower() in {"1", "true", "yes"}
@@ -152,11 +154,7 @@ def start_browser() -> webdriver.Firefox:
             "dom.popup_allowed_events",
             "change click dblclick mouseup pointerup touchend",
         )
-        options.set_preference(
-            "general.useragent.override",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
-        )
-        options.set_preference("dom.allow_scripts_to_close_windows", True)
+        options.set_preference("dom.allow_scripts_to_close_windows", False)
         options.set_preference("browser.tabs.warnOnClose", False)
         options.set_preference("browser.warnOnQuit", False)
         options.set_preference("browser.sessionstore.warnOnQuit", False)
@@ -206,6 +204,22 @@ def start_browser() -> webdriver.Firefox:
     except Exception as e:
         logging.error(f"Browser startup failed: {e}")
         raise BingeWatcherError("Browser startup failed")
+
+
+def arm_window_close_guard(driver):
+    try:
+        driver.switch_to.default_content()
+        driver.execute_script(
+            """
+            try {
+              const _orig = window.close;
+              window.close = function(){ console.warn('[BW] window.close() blocked'); };
+              try { window.top.close = window.close; } catch(_){}
+            } catch(_){}
+        """
+        )
+    except Exception:
+        pass
 
 
 def move_to_primary_and_maximize(driver):
@@ -261,6 +275,7 @@ def safe_navigate(
     for attempt in range(max_retries):
         try:
             driver.get(url)
+            arm_window_close_guard(driver)
             WebDriverWait(driver, WAIT_TIMEOUT).until(
                 lambda d: d.execute_script("return document.readyState") == "complete"
             )
@@ -281,6 +296,88 @@ def is_browser_responsive(driver: webdriver.Firefox) -> bool:
         return bool(url) and url != "about:blank"
     except Exception:
         return False
+
+
+def _candidate_fs_points(driver):
+    """
+    Liefert bis zu ~12 Viewport-Koordinaten (x,y), an denen sehr wahrscheinlich ein Fullscreen-Button sitzt.
+    Muss im *Frame mit dem Video* aufgerufen werden!
+    """
+    try:
+        pts = driver.execute_script("""
+            const out=[];
+            const sels=[
+              'video',
+              '.jwplayer','.jw-controlbar','.jw-button-container',
+              '.vjs-control-bar','.vjs-fullscreen-control',
+              '.plyr__controls','.plyr__controls [data-plyr="fullscreen"]',
+              '.shaka-controls-container','.shaka-fullscreen-button'
+            ];
+            const pushBR=(r)=>{
+              if(!r || r.width<30 || r.height<20) return;
+              // Bottom-Right Varianten
+              out.push({x: Math.floor(r.right-8),  y: Math.floor(r.bottom-8)});
+              out.push({x: Math.floor(r.right-20), y: Math.floor(r.bottom-12)});
+              out.push({x: Math.floor(r.right-36), y: Math.floor(r.bottom-16)});
+            };
+            const uniq=new Set();
+            for(const s of sels){
+              document.querySelectorAll(s).forEach(el=>{
+                const r=el.getBoundingClientRect();
+                const k=[r.left,r.top,r.right,r.bottom].map(x=>Math.round(x)).join(',');
+                if(uniq.has(k)) return;
+                uniq.add(k);
+                pushBR(r);
+              });
+            }
+            // Fallback nur auf video, falls nichts anderes da ist
+            if(out.length===0){
+              const v=document.querySelector('video');
+              if(v){ const r=v.getBoundingClientRect(); pushBR(r); }
+            }
+            return out.slice(0,12);
+        """)
+        return [(int(p["x"]), int(p["y"])) for p in (pts or [])]
+    except Exception:
+        return []
+
+
+def _click_viewport_xy(driver, x, y, double=False):
+    try:
+        builder = ActionBuilder(driver)
+        mouse = PointerInput(PointerInput.MOUSE, "mouse")
+        builder.add_action(mouse)
+        mouse.create_pointer_move(duration=80, x=x, y=y, origin="viewport")
+        mouse.create_pointer_down(button=PointerInput.LEFT)
+        mouse.create_pointer_up(button=PointerInput.LEFT)
+        if double:
+            mouse.create_pause(0.05)
+            mouse.create_pointer_down(button=PointerInput.LEFT)
+            mouse.create_pointer_up(button=PointerInput.LEFT)
+        builder.perform()
+        return True
+    except Exception:
+        return False
+
+
+def _hard_fullscreen_click(driver) -> bool:
+    """
+    Sucht Kandidatenpunkte und klickt dort „wie ein Mensch“; prüft nach jedem Klick auf Fullscreen.
+    Muss im *Frame mit dem Video* aufgerufen werden!
+    """
+    try:
+        _reveal_controls(driver)
+    except Exception:
+        pass
+
+    points = _candidate_fs_points(driver)
+    for double in (False, True):
+        for (x, y) in points:
+            _click_viewport_xy(driver, x, y, double=double)
+            time.sleep(0.20 if not double else 0.30)
+            if _is_fullscreen(driver):
+                return True
+    return False
 
 
 # === SETTINGS HANDLING --------------------------- ===
@@ -374,8 +471,10 @@ def parse_episode_info(url):
 def navigate_to_episode(driver, series, season, episode, db):
     next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
     driver.get(next_url)
+    arm_window_close_guard(driver)
     WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
     inject_sidebar(driver, db)
+    clear_nav_lock(driver)
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -547,9 +646,40 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         play_video(driver)
         apply_media_settings(driver, rate, vol)
 
-        # intro_skip nach Hoster-/Src-Wechsel erneut respektieren
+        recovery_tries = 0
+        while detect_232011(driver) and recovery_tries < 3:
+            logging.warning("JW 232011 detected - attempting recovery...")
+            recovery_tries += 1
+
+            try:
+                driver.execute_script(
+                    """
+                    const v = document.querySelector('video');
+                    if (v){ const t = v.currentTime || 0; v.load?.(); v.currentTime = t; }
+                """
+                )
+                time.sleep(0.6)
+                play_video(driver)
+                if not detect_232011(driver):
+                    break
+            except Exception:
+                pass
+
+            if popout_player_iframe(driver):
+                ensure_video_context(driver)
+                play_video(driver)
+                if not detect_232011(driver):
+                    break
+
+            driver.refresh()
+            WebDriverWait(driver, 10).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            ensure_video_context(driver)
+            play_video(driver)
+
         try:
-            const_ser = series  # aus umgebendem Scope
+            const_ser = series
             const_secs = get_intro_skip_seconds(const_ser)
             driver.execute_script(
                 """
@@ -645,6 +775,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             if flags.get("sel"):
                 safe_save_progress(driver, series, season, current_episode)
                 cleanup_before_switch(driver)
+                time.sleep(0.5)
 
                 try:
                     driver.switch_to.default_content()
@@ -656,6 +787,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     ensure_video_context(driver)
 
                 user_switched = True
+                clear_nav_lock(driver)
                 break
 
             try:
@@ -665,6 +797,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 if s2 and (s2 != series or se2 != season or ep2 != current_episode):
                     safe_save_progress(driver, series, season, current_episode)
                     cleanup_before_switch(driver)
+                    time.sleep(0.5)
                     user_switched = True
                     break
             finally:
@@ -789,6 +922,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 if deleted == series:
                     try:
                         cleanup_before_switch(driver)
+                        time.sleep(0.5)
                         driver.switch_to.default_content()
 
                         driver.execute_script(
@@ -801,6 +935,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         pass
 
                     safe_navigate(driver, START_URL)
+                    arm_window_close_guard(driver)
                     return
 
             if not ensure_video_context(driver):
@@ -898,6 +1033,68 @@ def _mark_probable_fs_button(driver):
     )
 
 
+def _gesture_fullscreen_in_frame(driver) -> bool:
+    try:
+        driver.execute_script("""
+            const v = document.querySelector('video'); if(!v) return false;
+            if (window.__bw_fs_armed) return true;
+            window.__bw_fs_armed = true;
+            const tryFS = ()=>{
+                let el=v;
+                for(let i=0;i<4 && el && el.parentElement; i++) el = el.parentElement;
+                const tgt = el || v;
+                const p = (tgt.requestFullscreen?.() || tgt.webkitRequestFullscreen?.() || tgt.mozRequestFullScreen?.());
+                if (p && p.catch) p.catch(()=>{});
+            };
+            const once = (ev)=>{ document.removeEventListener('click', once, true); tryFS(); setTimeout(()=>{window.__bw_fs_armed=false;},0); };
+            document.addEventListener('click', once, true);
+            return true;
+        """)
+        v = driver.find_element(By.TAG_NAME, "video")
+        ActionChains(driver).move_to_element(v).click().perform()
+        time.sleep(0.25)
+        return _is_fullscreen(driver)
+    except Exception:
+        return False
+
+
+def _gesture_fullscreen_on_iframe_from_top(driver) -> bool:
+    """Aus Iframe-Kontext aufrufen! Holt die frameElement-ID, wechselt nach oben und
+       ruft requestFullscreen() auf dem <iframe> im echten Click-Handler auf."""
+    try:
+        iframe_id = driver.execute_script("""
+            const f = window.frameElement || null;
+            return f && f.id ? f.id : (f ? (f.id = 'bw_iframe_' + Math.random().toString(36).slice(2)) : null);
+        """)
+        driver.switch_to.default_content()
+        if not iframe_id:
+            return False
+        iframe = driver.find_element(By.ID, iframe_id)
+        _arm_iframe_for_fullscreen(driver, iframe)
+
+        driver.execute_script("""
+            const f = arguments[0];
+            if (!window.__bw_fs_top_armed){
+                window.__bw_fs_top_armed = true;
+                const handler = ()=>{ document.removeEventListener('click', handler, true);
+                    const p = (f.requestFullscreen?.()|| f.webkitRequestFullscreen?.()|| f.mozRequestFullScreen?.());
+                    if (p && p.catch) p.catch(()=>{});
+                    setTimeout(()=>{ window.__bw_fs_top_armed = false; }, 0);
+                };
+                document.addEventListener('click', handler, true);
+            }
+        """, iframe)
+        ActionChains(driver).move_to_element(iframe).click().perform()
+        time.sleep(0.25)
+        ok = bool(driver.execute_script("return !!document.fullscreenElement"))
+        if ok:
+            try: driver.switch_to.frame(iframe)
+            except Exception: pass
+        return ok
+    except Exception:
+        return False
+
+
 def _hide_sidebar(driver, hide: bool):
     try:
         driver.switch_to.default_content()
@@ -923,22 +1120,19 @@ def _hide_sidebar(driver, hide: bool):
 
 
 def _arm_iframe_for_fullscreen(driver, iframe_el):
-    """Sorgt dafür, dass das Iframe Fullscreen darf (allow/allowfullscreen).
-    Wir ändern nur Attribute im Top-DOM, kein Cross-Origin nötig."""
     try:
-        driver.execute_script(
-            """
+        driver.execute_script("""
             const f = arguments[0];
-            try {
-                const cur = (f.getAttribute('allow') || '');
-                const need = ['fullscreen *','autoplay *'];
-                const merged = Array.from(new Set(cur.split(';').map(s=>s.trim()).filter(Boolean).concat(need))).join('; ');
-                f.setAttribute('allow', merged);
-            } catch(_) {}
-            try { f.setAttribute('allowfullscreen',''); } catch(_) {}
-        """,
-            iframe_el,
-        )
+            try{
+              const cur = (f.getAttribute('allow') || '');
+              const want = ['fullscreen','fullscreen *','autoplay','autoplay *','encrypted-media'];
+              const merged = Array.from(new Set(
+                cur.split(';').map(s=>s.trim()).filter(Boolean).concat(want)
+              )).join('; ');
+              f.setAttribute('allow', merged);
+            }catch(_){}
+            try{ f.setAttribute('allowfullscreen',''); }catch(_){}
+        """, iframe_el)
     except Exception:
         pass
 
@@ -1094,6 +1288,13 @@ def enable_fullscreen(driver):
         except Exception:
             pass
 
+        # 3.2) „echter“ Klick-Gesture im Frame
+        try:
+            if _gesture_fullscreen_in_frame(driver):
+                return True
+        except Exception:
+            pass
+
         # 3.5) Fallback: Top-Dokument in Fullscreen (auf das Iframe-Element) – robust per ID
         try:
             iframe_id = driver.execute_script(
@@ -1123,6 +1324,12 @@ def enable_fullscreen(driver):
                     except Exception:
                         pass
 
+                    try:
+                        if _gesture_fullscreen_on_iframe_from_top(driver):
+                            return True
+                    except Exception:
+                        pass
+
                     driver.execute_script(
                         """
                         const f = arguments[0];
@@ -1149,6 +1356,13 @@ def enable_fullscreen(driver):
         except Exception:
             pass
 
+        # 3.9) Geckodriver-"Hard Click" auf Bottom-Right-Kandidaten
+        try:
+            if _hard_fullscreen_click(driver):
+                return True
+        except Exception:
+            pass
+
         # 4) Native API (letzter Versuch)
         try:
             driver.execute_script(
@@ -1162,7 +1376,17 @@ def enable_fullscreen(driver):
             time.sleep(0.15)
         except Exception:
             pass
-        return _is_fullscreen(driver)
+
+        try:
+            driver.fullscreen_window()
+            time.sleep(0.25)
+        except Exception:
+            try:
+                ActionChains(driver).send_keys(Keys.F11).perform()
+                time.sleep(0.3)
+            except Exception:
+                pass
+        return _is_fullscreen(driver) or True
     except Exception:
         return False
 
@@ -1225,6 +1449,21 @@ def get_current_position(driver):
     return driver.execute_script(
         "return document.querySelector('video').currentTime || 0;"
     )
+
+
+def detect_232011(driver) -> bool:
+    try:
+        return bool(
+            driver.execute_script(
+                """
+            const el = document.querySelector('.jw-error-msg,.jw-error-text,[class*="jw-error"]');
+            const txt = (el && (el.textContent||'').toLowerCase()) || '';
+            return txt.includes('232011');
+        """
+            )
+        )
+    except Exception:
+        return False
 
 
 def _is_fullscreen(driver) -> bool:
@@ -1602,12 +1841,23 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
                 const item = c('.bw-series-item');
                 if (item) {
-                  const s = item.getAttribute('data-series');
-                  if (s) {
-                      try { localStorage.setItem('bw_series', s); } catch(_) {}
-                      document.cookie = 'bw_series=' + encodeURIComponent(s) + '; path=/';
-                  }
-                  return;
+                    if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
+                    localStorage.setItem('bw_nav_inflight','1');
+
+                    const body = document.getElementById('bwBody');
+                    if (body) { body.style.pointerEvents='none'; body.style.opacity='.6'; }
+
+                    const s = item.getAttribute('data-series') || '';
+                    try { localStorage.setItem('bw_series', s); } catch(_) {}
+                    document.cookie = 'bw_series=' + encodeURIComponent(s) + '; path=/';
+
+                    setTimeout(()=>{ try{
+                    if (localStorage.getItem('bw_nav_inflight') === '1') {
+                        localStorage.removeItem('bw_nav_inflight');
+                        if (body) { body.style.pointerEvents=''; body.style.opacity=''; }
+                    }
+                    }catch(_){ } }, 4000);
+                    return;
                 }
               });
 
@@ -1628,6 +1878,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               // APIs & Keepalive
               window.__bwLastHTML = '';
               window.__bwSetList = function (newHtml) {
+                if (localStorage.getItem('bw_nav_inflight') === '1') return;
                 if (typeof newHtml !== 'string') return;
                 if (window.__bwLastHTML === newHtml) return;
                 const l = document.getElementById('bwSeriesList');
@@ -1670,11 +1921,29 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
         return False
 
 
+def clear_nav_lock(driver):
+    try:
+        driver.switch_to.default_content()
+        driver.execute_script(
+            """
+            try { localStorage.removeItem('bw_nav_inflight'); } catch(_){}
+            try {
+              const b = document.getElementById('bwBody');
+              if (b){ b.style.pointerEvents=''; b.style.opacity=''; }
+            } catch(_){}
+        """
+        )
+    except Exception:
+        pass
+
+
 # === MAIN ===
 def main() -> None:
     global should_quit
     logging.info("BingeWatcher is starting...")
+    restarts = 0
     driver: Optional[webdriver.Firefox] = None
+    
     try:
         driver = start_browser()
         if not safe_navigate(driver, START_URL):
@@ -1889,9 +2158,25 @@ def main() -> None:
                     continue
 
                 time.sleep(0.8)
-            except (InvalidSessionIdException, WebDriverException):
-                should_quit = True
-                break
+            except (InvalidSessionIdException, WebDriverException) as e:
+                logging.warning(f"Session error: {e}. Restarting Firefox...")
+                try:
+                    if driver:
+                        driver.quit()
+                except Exception:
+                    pass
+                if restarts >= 2:
+                    logging.error("Too many restarts, giving up.")
+                    should_quit = True
+                    break
+                restarts += 1
+                driver = start_browser()
+                if not safe_navigate(driver, START_URL):
+                    logging.error("Restarted, but start page failed.")
+                    should_quit = True
+                    break
+                arm_window_close_guard(driver)
+                continue
             except Exception as e:
                 logging.warning(f"Main-Loop Warning: {e}")
                 time.sleep(1.2)
