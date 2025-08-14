@@ -744,9 +744,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     # Fullscreen bei Änderung direkt toggeln
                     try:
                         driver.switch_to.default_content()
-                        const_fs = driver.execute_script(
-                            "return !!document.fullscreenElement"
-                        )
+                        const_fs = _is_fullscreen(driver)
                         ensure_video_context(driver)
                         if auto_fs and not const_fs and not HEADLESS:
                             _hide_sidebar(driver, True)
@@ -1030,7 +1028,18 @@ def enable_fullscreen(driver):
         ensure_video_context(driver)
         if _is_fullscreen(driver):
             return True
-        _reveal_controls(driver)
+
+        try:
+            driver.switch_to.default_content()
+            driver.execute_script("try{ window.focus(); }catch(_){ }")
+            try:
+                body = driver.find_element(By.TAG_NAME, "body")
+                ActionChains(driver).move_to_element(body).click().perform()
+            except Exception:
+                pass
+        finally:
+            ensure_video_context(driver)
+            _reveal_controls(driver)
 
         for sel in [
             ".jw-icon-fullscreen",
@@ -1085,46 +1094,57 @@ def enable_fullscreen(driver):
         except Exception:
             pass
 
-        # 3.5) Fallback: Top-Dokument in Fullscreen (auf das Iframe-Element)
+        # 3.5) Fallback: Top-Dokument in Fullscreen (auf das Iframe-Element) – robust per ID
         try:
-            # Wir sind JETZT im Video-Frame → Embed-Iframe referenzieren
-            embed_iframe = driver.execute_script("return window.frameElement || null")
+            iframe_id = driver.execute_script(
+                """
+                const f = window.frameElement || null;
+                if (!f) return null;
+                if (!f.id) f.id = 'bw_iframe_' + Math.random().toString(36).slice(2);
+                return f.id;
+            """
+            )
 
             driver.switch_to.default_content()
-            target_iframe = embed_iframe  # robust, unabhängig von src/about:blank/blob:
-
-            if target_iframe is not None:
-                _arm_iframe_for_fullscreen(driver, target_iframe)
-
-                # (Optional aber hilfreich) echte User-Geste: aufs Iframe klicken
+            if iframe_id:
                 try:
-                    ActionChains(driver).move_to_element(
-                        target_iframe
-                    ).click().perform()
-                    time.sleep(0.05)
+                    target_iframe = driver.find_element(By.ID, iframe_id)
                 except Exception:
-                    pass
+                    target_iframe = None
 
-                driver.execute_script(
-                    """
-                    const f = arguments[0];
-                    const p = (f.requestFullscreen?.() || f.webkitRequestFullscreen?.() || f.mozRequestFullScreen?.());
-                    if (p && p.catch) p.catch(()=>{});
-                """,
-                    target_iframe,
-                )
-                time.sleep(0.25)
+                if target_iframe is not None:
+                    _arm_iframe_for_fullscreen(driver, target_iframe)
 
-                # Im Top-DOM prüfen
-                ok = bool(driver.execute_script("return !!document.fullscreenElement"))
-                if ok:
                     try:
-                        driver.switch_to.frame(target_iframe)
+                        ActionChains(driver).move_to_element(
+                            target_iframe
+                        ).click().perform()
+                        time.sleep(0.05)
                     except Exception:
                         pass
-                    return True
 
-            # zurück in den Video-Frame
+                    driver.execute_script(
+                        """
+                        const f = arguments[0];
+                        const p = (f.requestFullscreen?.()
+                                   || f.webkitRequestFullscreen?.()
+                                   || f.mozRequestFullScreen?.());
+                        if (p && p.catch) p.catch(()=>{});
+                    """,
+                        target_iframe,
+                    )
+
+                    time.sleep(0.25)
+                    ok = bool(
+                        driver.execute_script("return !!document.fullscreenElement")
+                    )
+                    if ok:
+                        try:
+                            driver.switch_to.frame(target_iframe)
+                        except Exception:
+                            pass
+                        return True
+
             ensure_video_context(driver)
         except Exception:
             pass
@@ -1211,7 +1231,21 @@ def _is_fullscreen(driver) -> bool:
     try:
         return bool(
             driver.execute_script(
-                "return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);"
+                """
+            try {
+              const inFrame = !!(document.fullscreenElement
+                                 || document.webkitFullscreenElement
+                                 || document.mozFullScreenElement);
+              let inTop = false;
+              try {
+                const td = window.top && window.top.document;
+                inTop = !!(td && (td.fullscreenElement
+                                  || td.webkitFullscreenElement
+                                  || td.mozFullScreenElement));
+              } catch(_) {}
+              return inFrame || inTop;
+            } catch(e) { return false; }
+        """
             )
         )
     except Exception:
@@ -1261,9 +1295,10 @@ def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
         season = int(data.get("season", 1))
         episode = int(data.get("episode", 1))
         position = int(data.get("position", 0))
-        intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
         ts_val = float(data.get("timestamp", 0))
+        intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
         safe_name = _html.escape(series_name, quote=True)
+
         items_html.append(
             f"""
       <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}"
