@@ -161,6 +161,9 @@ def start_browser() -> webdriver.Firefox:
 
         options.set_preference("full-screen-api.enabled", True)
         options.set_preference("full-screen-api.allow-trusted-requests-only", False)
+        options.set_preference("full-screen-api.mouse-event-allow-button", True)
+        options.set_preference("full-screen-api.warning.delay", 0)
+        options.set_preference("full-screen-api.warning.timeout", 0)
         options.set_preference("layers.acceleration.disabled", True)
         options.set_preference("gfx.webrender.force-disabled", True)
         options.set_preference("media.wmf.dxva.enabled", False)
@@ -300,42 +303,70 @@ def is_browser_responsive(driver: webdriver.Firefox) -> bool:
 
 def _candidate_fs_points(driver):
     """
-    Liefert bis zu ~12 Viewport-Koordinaten (x,y), an denen sehr wahrscheinlich ein Fullscreen-Button sitzt.
+    Liefert bis zu ~20 Viewport-Koordinaten (x,y), an denen sehr wahrscheinlich ein Fullscreen-Button sitzt.
     Muss im *Frame mit dem Video* aufgerufen werden!
     """
     try:
         pts = driver.execute_script("""
-            const out=[];
-            const sels=[
-              'video',
-              '.jwplayer','.jw-controlbar','.jw-button-container',
-              '.vjs-control-bar','.vjs-fullscreen-control',
-              '.plyr__controls','.plyr__controls [data-plyr="fullscreen"]',
-              '.shaka-controls-container','.shaka-fullscreen-button'
+            const out = [];
+            const sels = [
+                // Video-Element
+                'video',
+                // JWPlayer
+                '.jwplayer', '.jw-controlbar', '.jw-button-container', '.jw-icon-fullscreen',
+                // Video.js
+                '.vjs-control-bar', '.vjs-fullscreen-control', '.video-js',
+                // Plyr
+                '.plyr__controls', '.plyr__controls [data-plyr="fullscreen"]', '.plyr',
+                // Shaka Player
+                '.shaka-controls-container', '.shaka-fullscreen-button',
+                // Weitere Player
+                '.mejs-controls', '.mejs-fullscreen-button',
+                '.flowplayer', '.flowplayer-fullscreen',
+                '.dplayer', '.dplayer-fullscreen',
+                // Generische Controls
+                '[class*="control"]', '[class*="player"]', '[class*="video"]'
             ];
-            const pushBR=(r)=>{
-              if(!r || r.width<30 || r.height<20) return;
-              // Bottom-Right Varianten
-              out.push({x: Math.floor(r.right-8),  y: Math.floor(r.bottom-8)});
-              out.push({x: Math.floor(r.right-20), y: Math.floor(r.bottom-12)});
-              out.push({x: Math.floor(r.right-36), y: Math.floor(r.bottom-16)});
+            
+            const pushBR = (r) => {
+                if (!r || r.width < 20 || r.height < 15) return;
+                
+                // Bottom-Right Varianten (häufigste Position)
+                out.push({x: Math.floor(r.right - 8), y: Math.floor(r.bottom - 8)});
+                out.push({x: Math.floor(r.right - 20), y: Math.floor(r.bottom - 12)});
+                out.push({x: Math.floor(r.right - 36), y: Math.floor(r.bottom - 16)});
+                out.push({x: Math.floor(r.right - 50), y: Math.floor(r.bottom - 20)});
+                
+                // Center-Right Varianten
+                out.push({x: Math.floor(r.right - 8), y: Math.floor(r.top + r.height/2)});
+                out.push({x: Math.floor(r.right - 20), y: Math.floor(r.top + r.height/2)});
+                
+                // Top-Right Varianten
+                out.push({x: Math.floor(r.right - 8), y: Math.floor(r.top + 8)});
+                out.push({x: Math.floor(r.right - 20), y: Math.floor(r.top + 12)});
             };
-            const uniq=new Set();
-            for(const s of sels){
-              document.querySelectorAll(s).forEach(el=>{
-                const r=el.getBoundingClientRect();
-                const k=[r.left,r.top,r.right,r.bottom].map(x=>Math.round(x)).join(',');
-                if(uniq.has(k)) return;
-                uniq.add(k);
-                pushBR(r);
-              });
+            
+            const uniq = new Set();
+            for (const s of sels) {
+                document.querySelectorAll(s).forEach(el => {
+                    const r = el.getBoundingClientRect();
+                    const k = [r.left, r.top, r.right, r.bottom].map(x => Math.round(x)).join(',');
+                    if (uniq.has(k)) return;
+                    uniq.add(k);
+                    pushBR(r);
+                });
             }
+            
             // Fallback nur auf video, falls nichts anderes da ist
-            if(out.length===0){
-              const v=document.querySelector('video');
-              if(v){ const r=v.getBoundingClientRect(); pushBR(r); }
+            if (out.length === 0) {
+                const v = document.querySelector('video');
+                if (v) { 
+                    const r = v.getBoundingClientRect(); 
+                    pushBR(r); 
+                }
             }
-            return out.slice(0,12);
+            
+            return out.slice(0, 20);
         """)
         return [(int(p["x"]), int(p["y"])) for p in (pts or [])]
     except Exception:
@@ -362,7 +393,7 @@ def _click_viewport_xy(driver, x, y, double=False):
 
 def _hard_fullscreen_click(driver) -> bool:
     """
-    Sucht Kandidatenpunkte und klickt dort „wie ein Mensch“; prüft nach jedem Klick auf Fullscreen.
+    Sucht Kandidatenpunkte und klickt dort „wie ein Mensch" - prüft nach jedem Klick auf Fullscreen.
     Muss im *Frame mit dem Video* aufgerufen werden!
     """
     try:
@@ -371,12 +402,37 @@ def _hard_fullscreen_click(driver) -> bool:
         pass
 
     points = _candidate_fs_points(driver)
-    for double in (False, True):
+    
+    # Verschiedene Klick-Strategien versuchen
+    for strategy in ['single', 'double', 'long']:
         for (x, y) in points:
-            _click_viewport_xy(driver, x, y, double=double)
-            time.sleep(0.20 if not double else 0.30)
+            if strategy == 'single':
+                _click_viewport_xy(driver, x, y, double=False)
+                time.sleep(0.25)
+            elif strategy == 'double':
+                _click_viewport_xy(driver, x, y, double=True)
+                time.sleep(0.35)
+            elif strategy == 'long':
+                # Längerer Klick (für manche Player)
+                try:
+                    builder = ActionBuilder(driver)
+                    mouse = PointerInput(PointerInput.MOUSE, "mouse")
+                    builder.add_action(mouse)
+                    mouse.create_pointer_move(duration=100, x=x, y=y, origin="viewport")
+                    mouse.create_pointer_down(button=PointerInput.LEFT)
+                    mouse.create_pause(0.3)  # 300ms halten
+                    mouse.create_pointer_up(button=PointerInput.LEFT)
+                    builder.perform()
+                    time.sleep(0.3)
+                except Exception:
+                    continue
+            
             if _is_fullscreen(driver):
                 return True
+                
+            # Kurze Pause zwischen Klicks
+            time.sleep(0.1)
+    
     return False
 
 
@@ -469,12 +525,24 @@ def parse_episode_info(url):
 
 
 def navigate_to_episode(driver, series, season, episode, db):
-    next_url = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
-    driver.get(next_url)
+    target = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
+    driver.get(target)
     arm_window_close_guard(driver)
-    WebDriverWait(driver, 10).until(EC.url_contains(f"episode-{episode}"))
+    time.sleep(2)
+
+    cur = driver.current_url
+    actual_series, actual_season, actual_episode = parse_episode_info(cur)
+    if not actual_series:
+        logging.error(f"Konnte URL nicht parsen: {cur}")
+        # trotzdem Sidebar/Unlock
+        inject_sidebar(driver, db)
+        clear_nav_lock(driver)
+        return season, episode
+
+    # Akzeptiere Weiterleitungen als Wahrheit
     inject_sidebar(driver, db)
     clear_nav_lock(driver)
+    return actual_season, actual_episode
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -609,6 +677,10 @@ def popout_player_iframe(driver) -> bool:
 def play_episodes_loop(driver, series, season, episode, position=0):
     global should_quit
     current_episode = episode
+    current_season = season
+    
+    # Spezielle Behandlung für One Piece (Staffel 11 Problem)
+    is_one_piece = series.lower() in ['one-piece', 'one piece', 'onepiece']
 
     while True:
         db = load_progress()
@@ -620,9 +692,21 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         vol = settings["volume"]
 
         print(
-            f"\n[▶] Playing {series.capitalize()} – Season {season}, Episode {current_episode}"
+            f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
         )
-        navigate_to_episode(driver, series, season, current_episode, db)
+        
+        # Navigiere zur Episode und prüfe auf Weiterleitungen
+        actual_season, actual_episode = navigate_to_episode(driver, series, current_season, current_episode, db)
+        
+        # Falls wir zu einer anderen Staffel/Episode weitergeleitet wurden, aktualisiere die Variablen
+        if actual_season != current_season or actual_episode != current_episode:
+            logging.info(f"Navigation angepasst: S{current_season}E{current_episode} → S{actual_season}E{actual_episode}")
+            current_season = actual_season
+            current_episode = actual_episode
+            
+            # Aktualisiere auch den Fortschritt mit den korrekten Werten
+            save_progress(series, current_season, current_episode, 0)
+        
         sync_settings_to_localstorage(driver)
 
         if not ensure_video_context(driver):
@@ -699,7 +783,9 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
             time.sleep(0.25)
+            
             ok = enable_fullscreen(driver)
+            
             if not ok and os.getenv("BW_POPOUT_IFRAME", "false").lower() in {
                 "1",
                 "true",
@@ -753,7 +839,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             except Exception:
                 cur_pos = 0
 
-            save_progress(series, season, current_episode, cur_pos)
+            save_progress(series, current_season, current_episode, cur_pos)
 
             driver.switch_to.default_content()
             html = build_items_html(load_progress())
@@ -768,12 +854,14 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 ensure_video_context(driver)
             except Exception:
                 pass
+            
+        auto_nav = False
 
         while True:
             flags = poll_ui_flags(driver)
 
             if flags.get("sel"):
-                safe_save_progress(driver, series, season, current_episode)
+                safe_save_progress(driver, series, current_season, current_episode)
                 cleanup_before_switch(driver)
                 time.sleep(0.5)
 
@@ -794,8 +882,18 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 driver.switch_to.default_content()
                 cur_url = driver.current_url or ""
                 s2, se2, ep2 = parse_episode_info(cur_url)
-                if s2 and (s2 != series or se2 != season or ep2 != current_episode):
-                    safe_save_progress(driver, series, season, current_episode)
+
+                if s2 == series and (se2 is not None and ep2 is not None) \
+                and (se2 != current_season or ep2 != current_episode):
+                    # Interne Auto-Navigation (z. B. Next Episode / Redirect)
+                    safe_save_progress(driver, series, current_season, current_episode)
+                    current_season, current_episode = se2, ep2
+                    auto_nav = True
+                    break  # raus aus innerer Loop, outer Loop startet mit aktualisiertem Zustand
+
+                elif s2 and s2 != series:
+                    # Wirklicher Serienwechsel (vom User)
+                    safe_save_progress(driver, series, current_season, current_episode)
                     cleanup_before_switch(driver)
                     time.sleep(0.5)
                     user_switched = True
@@ -968,13 +1066,17 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             now = time.time()
             if now - last_save >= PROGRESS_SAVE_INTERVAL:
                 current_pos = get_current_position(driver)
-                save_progress(series, season, current_episode, int(current_pos))
+                save_progress(series, current_season, current_episode, int(current_pos))
                 last_save = now
 
             if remaining_time <= 3:
                 break
 
             time.sleep(1.0)
+
+        if auto_nav:
+            position = get_intro_skip_seconds(series) if auto_skip else 0
+            continue
 
         exit_fullscreen(driver)
         _hide_sidebar(driver, False)
@@ -989,7 +1091,64 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         if not auto_next:
             return
 
-        current_episode += 1
+        # Spezielle Behandlung für One Piece: Verhindere Sprung zu Staffel 11
+        if is_one_piece and current_season == 1:
+            # Prüfe, ob die nächste Episode in Staffel 1 existiert
+            next_episode = current_episode + 1
+            
+            # Versuche zur nächsten Episode zu navigieren, um zu prüfen, ob sie existiert
+            test_url = f"https://s.to/serie/stream/{series}/staffel-{current_season}/episode-{next_episode}"
+            try:
+                driver.get(test_url)
+                arm_window_close_guard(driver)
+                time.sleep(3)  # Längere Wartezeit für bessere Erkennung
+                
+                # Prüfe, ob wir zur richtigen Episode weitergeleitet wurden
+                current_url = driver.current_url
+                parsed_info = parse_episode_info(current_url)
+                
+                if parsed_info:
+                    test_series, test_season, test_episode = parsed_info
+                    
+                    # Prüfe explizit auf Staffel 11 Weiterleitung
+                    if test_series == series and test_season == 11:
+                        logging.warning(f"One Piece: Staffel 11 Weiterleitung erkannt! S{test_season}E{test_episode}")
+                        logging.info(f"One Piece: Beende Staffel 1 bei Episode {current_episode}")
+                        return  # Beende die Schleife, da Staffel 1 zu Ende ist
+                    
+                    # Prüfe, ob wir zur richtigen Episode weitergeleitet wurden
+                    if test_series == series and test_season == current_season and test_episode == next_episode:
+                        # Episode existiert in Staffel 1, normal fortfahren
+                        current_episode = next_episode
+                        logging.info(f"One Piece: Nächste Episode S{current_season}E{current_episode} gefunden")
+                    else:
+                        # Unerwartete Weiterleitung
+                        logging.warning(f"One Piece: Unerwartete Weiterleitung zu S{test_season}E{test_episode}")
+                        # Prüfe, ob es sich um Staffel 11 handelt
+                        if test_season == 11:
+                            logging.info(f"One Piece: Beende Staffel 1 bei Episode {current_episode} (Staffel 11 erkannt)")
+                            return  # Beende die Schleife
+                        else:
+                            # Andere unerwartete Weiterleitung, versuche es trotzdem
+                            current_episode = next_episode
+                else:
+                    # URL konnte nicht geparst werden, prüfe manuell auf Staffel 11
+                    if "staffel-11" in current_url.lower():
+                        logging.warning(f"One Piece: Staffel 11 in URL erkannt: {current_url}")
+                        logging.info(f"One Piece: Beende Staffel 1 bei Episode {current_episode}")
+                        return  # Beende die Schleife
+                    else:
+                        # URL konnte nicht geparst werden, vermutlich existiert die Episode nicht
+                        logging.info(f"One Piece: Episode {next_episode} in Staffel 1 existiert nicht")
+                        return  # Beende die Schleife
+            except Exception as e:
+                logging.error(f"Fehler beim Testen der nächsten One Piece Episode: {e}")
+                # Bei Fehler trotzdem zur nächsten Episode
+                current_episode = next_episode
+        else:
+            # Normale Episode-Inkrementierung für andere Serien
+            current_episode += 1
+            
         position = get_intro_skip_seconds(series) if auto_skip else 0
         continue
 
@@ -1013,22 +1172,46 @@ def _mark_probable_fs_button(driver):
         """
         const v = document.querySelector('video'); if (!v) return;
         const vr = v.getBoundingClientRect();
-        const cand = Array.from(document.querySelectorAll('button,[role="button"],[class*="control"],[class*="fullscreen"],[aria-label],[title]'));
-        let best=null, score=-1;
-        const labelHit = el => ((el.getAttribute('aria-label')||el.getAttribute('title')||el.textContent||'')+' '+(el.className||'')).toLowerCase().match(/vollbild|full.?screen|fullscreen|maximi/);
-        const vis = el => { const s=getComputedStyle(el); const r=el.getBoundingClientRect(); return s.visibility!=='hidden' && s.display!=='none' && r.width>12 && r.height>12;};
-        cand.forEach(el=>{
+        const cand = Array.from(document.querySelectorAll('button,[role="button"],[class*="control"],[class*="fullscreen"],[class*="player"],[aria-label],[title]'));
+        let best = null, score = -1;
+        
+        const labelHit = el => {
+            const text = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '') + ' ' + (el.className || '');
+            return text.toLowerCase().match(/vollbild|full.?screen|fullscreen|maximi|expand|zoom/);
+        };
+        
+        const vis = el => { 
+            const s = getComputedStyle(el); 
+            const r = el.getBoundingClientRect(); 
+            return s.visibility !== 'hidden' && s.display !== 'none' && r.width > 12 && r.height > 12;
+        };
+        
+        cand.forEach(el => {
             if (!vis(el)) return;
-            const r=el.getBoundingClientRect();
+            const r = el.getBoundingClientRect();
+            
             // Nähe zur rechten unteren Ecke des Videos
-            const cx=(r.left+r.right)/2, cy=(r.top+r.bottom)/2;
-            let s = -Math.hypot(cx-vr.right, cy-vr.bottom);
+            const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+            let s = -Math.hypot(cx - vr.right, cy - vr.bottom);
+            
+            // Scoring-System
             if (labelHit(el)) s += 500;
-            if ((el.className||'').toLowerCase().includes('full')) s += 250;
-            if (r.right < vr.left-20 || r.left > vr.right+20 || r.bottom < vr.top-20 || r.top > vr.bottom+20) s -= 200; // außerhalb
-            if (s>score){ score=s; best=el; }
+            if ((el.className || '').toLowerCase().includes('full')) s += 250;
+            if ((el.className || '').toLowerCase().includes('screen')) s += 200;
+            if ((el.className || '').toLowerCase().includes('expand')) s += 150;
+            if ((el.className || '').toLowerCase().includes('zoom')) s += 150;
+            
+            // Bestrafung für Elemente außerhalb des Videos
+            if (r.right < vr.left - 20 || r.left > vr.right + 20 || r.bottom < vr.top - 20 || r.top > vr.bottom + 20) s -= 200;
+            
+            // Bonus für kleine, quadratische Buttons (typisch für Vollbild-Buttons)
+            const aspectRatio = Math.abs(r.width - r.height);
+            if (aspectRatio < 5 && r.width < 50 && r.height < 50) s += 100;
+            
+            if (s > score) { score = s; best = el; }
         });
-        if (best) best.setAttribute('data-bw-fullscreen','1');
+        
+        if (best) best.setAttribute('data-bw-fullscreen', '1');
     """
     )
 
@@ -1218,84 +1401,145 @@ def pause_video(driver):
 
 
 def enable_fullscreen(driver):
+    """
+    Verbesserte Vollbild-Aktivierung mit mehreren Fallback-Strategien.
+    Berücksichtigt User-Gesture-Requirements und verschiedene Player-APIs.
+    """
     try:
         ensure_video_context(driver)
         if _is_fullscreen(driver):
             return True
 
+        # 1. Zuerst sicherstellen, dass wir im richtigen Kontext sind
         try:
             driver.switch_to.default_content()
             driver.execute_script("try{ window.focus(); }catch(_){ }")
+            # Echten Klick auf Body für User-Gesture
             try:
                 body = driver.find_element(By.TAG_NAME, "body")
                 ActionChains(driver).move_to_element(body).click().perform()
+                time.sleep(0.1)
             except Exception:
                 pass
         finally:
             ensure_video_context(driver)
             _reveal_controls(driver)
 
-        for sel in [
+        # 2. Player-spezifische Vollbild-Buttons suchen und klicken
+        fullscreen_selectors = [
+            # JWPlayer
             ".jw-icon-fullscreen",
+            ".jw-display-icon-container .jw-icon-fullscreen",
+            ".jw-controlbar .jw-icon-fullscreen",
+            # Video.js
             ".vjs-fullscreen-control",
+            ".vjs-control-bar .vjs-fullscreen-control",
+            # Plyr
             ".plyr__control--fullscreen",
+            ".plyr__controls [data-plyr='fullscreen']",
+            # Shaka Player
             ".shaka-fullscreen-button",
+            ".shaka-controls-container .shaka-fullscreen-button",
+            # Generische Vollbild-Buttons
             'button[aria-label*="full" i]',
             'button[title*="full" i]',
-            '[class*="fullscreen" i],[aria-label*="Vollbild" i]',
-        ]:
-            try:
-                el = driver.find_element(By.CSS_SELECTOR, sel)
-                if el.is_displayed() and el.is_enabled():
-                    ActionChains(driver).move_to_element(el).click().perform()
-                    time.sleep(0.25)
-                    if _is_fullscreen(driver):
-                        return True
-            except Exception:
-                pass
+            'button[aria-label*="Vollbild" i]',
+            '[class*="fullscreen" i]',
+            '[class*="full-screen" i]',
+            # Weitere Player
+            ".mejs-fullscreen-button",
+            ".flowplayer-fullscreen",
+            ".dplayer-fullscreen",
+        ]
 
-        # 1) Button klicken
+        for sel in fullscreen_selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, sel)
+                for el in elements:
+                    if el.is_displayed() and el.is_enabled():
+                        # Mehrere Klick-Varianten versuchen
+                        try:
+                            # Direkter Klick
+                            ActionChains(driver).move_to_element(el).click().perform()
+                            time.sleep(0.3)
+                            if _is_fullscreen(driver):
+                                return True
+                        except Exception:
+                            pass
+                        
+                        try:
+                            # JavaScript-Klick als Fallback
+                            driver.execute_script("arguments[0].click();", el)
+                            time.sleep(0.3)
+                            if _is_fullscreen(driver):
+                                return True
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+
+        # 3. Intelligente Button-Erkennung mit Heuristik
         _mark_probable_fs_button(driver)
-        # 1) Button klicken
         try:
             btn = driver.find_element(By.CSS_SELECTOR, '[data-bw-fullscreen="1"]')
             ActionChains(driver).move_to_element(btn).click().perform()
-            time.sleep(0.2)
+            time.sleep(0.3)
             if _is_fullscreen(driver):
                 return True
         except Exception:
             pass
-        # 2) Doppelklick
+
+        # 4. Video-Doppelklick (häufig verwendete Methode)
         try:
-            v = WebDriverWait(driver, 2).until(
+            v = WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located((By.TAG_NAME, "video"))
             )
+            # Erst einfacher Klick für User-Gesture
+            ActionChains(driver).move_to_element(v).click().perform()
+            time.sleep(0.1)
+            # Dann Doppelklick
             ActionChains(driver).move_to_element(v).double_click().perform()
-            time.sleep(0.2)
+            time.sleep(0.3)
             if _is_fullscreen(driver):
                 return True
         except Exception:
             pass
-        # 3) 'f'
+
+        # 5. Tastatur-Shortcuts
         try:
+            # Video fokussieren
             driver.execute_script(
-                "const v=document.querySelector('video'); if(v){ v.tabIndex=0; v.focus(); }"
+                """
+                const v = document.querySelector('video');
+                if (v) {
+                    v.tabIndex = 0;
+                    v.focus();
+                    // Event-Listener für 'f' hinzufügen
+                    if (!v.__bw_fs_listener) {
+                        v.__bw_fs_listener = true;
+                        document.addEventListener('keydown', (e) => {
+                            if (e.key === 'f' || e.key === 'F') {
+                                e.preventDefault();
+                                const target = v.parentElement || v;
+                                const p = (target.requestFullscreen?.() || 
+                                          target.webkitRequestFullscreen?.() || 
+                                          target.mozRequestFullScreen?.());
+                                if (p && p.catch) p.catch(() => {});
+                            }
+                        }, { passive: false });
+                    }
+                }
+            """
             )
-            ActionChains(driver).send_keys("f").pause(0.05).perform()
-            time.sleep(0.2)
+            # 'f' Taste senden
+            ActionChains(driver).send_keys("f").pause(0.1).perform()
+            time.sleep(0.3)
             if _is_fullscreen(driver):
                 return True
         except Exception:
             pass
 
-        # 3.2) „echter“ Klick-Gesture im Frame
-        try:
-            if _gesture_fullscreen_in_frame(driver):
-                return True
-        except Exception:
-            pass
-
-        # 3.5) Fallback: Top-Dokument in Fullscreen (auf das Iframe-Element) – robust per ID
+        # 6. Iframe-spezifische Vollbild-Aktivierung
         try:
             iframe_id = driver.execute_script(
                 """
@@ -1306,88 +1550,161 @@ def enable_fullscreen(driver):
             """
             )
 
-            driver.switch_to.default_content()
             if iframe_id:
+                driver.switch_to.default_content()
                 try:
                     target_iframe = driver.find_element(By.ID, iframe_id)
-                except Exception:
-                    target_iframe = None
-
-                if target_iframe is not None:
                     _arm_iframe_for_fullscreen(driver, target_iframe)
-
-                    try:
-                        ActionChains(driver).move_to_element(
-                            target_iframe
-                        ).click().perform()
-                        time.sleep(0.05)
-                    except Exception:
-                        pass
-
-                    try:
-                        if _gesture_fullscreen_on_iframe_from_top(driver):
-                            return True
-                    except Exception:
-                        pass
-
+                    
+                    # Iframe klicken für User-Gesture
+                    ActionChains(driver).move_to_element(target_iframe).click().perform()
+                    time.sleep(0.1)
+                    
+                    # Vollbild über Iframe versuchen
                     driver.execute_script(
                         """
                         const f = arguments[0];
-                        const p = (f.requestFullscreen?.()
-                                   || f.webkitRequestFullscreen?.()
-                                   || f.mozRequestFullScreen?.());
-                        if (p && p.catch) p.catch(()=>{});
+                        const p = (f.requestFullscreen?.() || 
+                                  f.webkitRequestFullscreen?.() || 
+                                  f.mozRequestFullScreen?.());
+                        if (p && p.catch) p.catch(() => {});
                     """,
                         target_iframe,
                     )
-
-                    time.sleep(0.25)
-                    ok = bool(
-                        driver.execute_script("return !!document.fullscreenElement")
-                    )
-                    if ok:
+                    time.sleep(0.4)
+                    
+                    if _is_fullscreen(driver):
                         try:
                             driver.switch_to.frame(target_iframe)
                         except Exception:
                             pass
                         return True
-
-            ensure_video_context(driver)
+                except Exception:
+                    pass
+                finally:
+                    ensure_video_context(driver)
         except Exception:
             pass
 
-        # 3.9) Geckodriver-"Hard Click" auf Bottom-Right-Kandidaten
+        # 7. Geckodriver-spezifische Viewport-Klicks
         try:
             if _hard_fullscreen_click(driver):
                 return True
         except Exception:
             pass
 
-        # 4) Native API (letzter Versuch)
+        # 8. Native Browser-APIs als letzter Versuch
         try:
             driver.execute_script(
                 """
-                const doc=document, v=document.querySelector('video'); if(!v) return;
-                let el=v; for(let i=0;i<3 && el && el.parentElement; i++) el=el.parentElement;
-                const tgt=el||v; const p=(tgt.requestFullscreen?.()||tgt.webkitRequestFullscreen?.()||tgt.mozRequestFullScreen?.());
-                if (p && p.catch) p.catch(()=>{});
+                const v = document.querySelector('video');
+                if (!v) return;
+                
+                // Verschiedene Vollbild-APIs versuchen
+                const apis = [
+                    () => v.requestFullscreen?.(),
+                    () => v.webkitRequestFullscreen?.(),
+                    () => v.mozRequestFullScreen?.(),
+                    () => v.msRequestFullscreen?.(),
+                    () => v.parentElement?.requestFullscreen?.(),
+                    () => v.parentElement?.webkitRequestFullscreen?.(),
+                    () => v.parentElement?.mozRequestFullScreen?.(),
+                    () => v.parentElement?.msRequestFullscreen?.(),
+                ];
+                
+                for (const api of apis) {
+                    try {
+                        const p = api();
+                        if (p && p.catch) p.catch(() => {});
+                        break;
+                    } catch (e) {
+                        continue;
+                    }
+                }
             """
             )
-            time.sleep(0.15)
+            time.sleep(0.3)
+            if _is_fullscreen(driver):
+                return True
         except Exception:
             pass
 
+        # 8.5. Player-spezifische APIs für s.to
+        try:
+            driver.execute_script(
+                """
+                // JWPlayer API
+                if (window.jwplayer && window.jwplayer().getContainer) {
+                    try {
+                        const player = window.jwplayer();
+                        if (player && typeof player.setFullscreen === 'function') {
+                            player.setFullscreen(true);
+                            return;
+                        }
+                    } catch (e) {}
+                }
+                
+                // Video.js API
+                if (window.videojs) {
+                    try {
+                        const players = window.videojs.getPlayers();
+                        for (const id in players) {
+                            const player = players[id];
+                            if (player && typeof player.requestFullscreen === 'function') {
+                                player.requestFullscreen();
+                                return;
+                            }
+                        }
+                    } catch (e) {}
+                }
+                
+                // Plyr API
+                if (window.Plyr) {
+                    try {
+                        const players = document.querySelectorAll('[data-plyr]');
+                        players.forEach(el => {
+                            if (el.plyr && typeof el.plyr.fullscreen.enter === 'function') {
+                                el.plyr.fullscreen.enter();
+                            }
+                        });
+                    } catch (e) {}
+                }
+                
+                // Shaka Player API
+                if (window.shaka && window.shaka.Player) {
+                    try {
+                        const video = document.querySelector('video');
+                        if (video && video.shakaPlayer) {
+                            video.shakaPlayer.getControls().getFullscreenButton().click();
+                        }
+                    } catch (e) {}
+                }
+            """
+            )
+            time.sleep(0.4)
+            if _is_fullscreen(driver):
+                return True
+        except Exception:
+            pass
+
+        # 9. Browser-Fenster-Vollbild als Fallback
         try:
             driver.fullscreen_window()
-            time.sleep(0.25)
+            time.sleep(0.3)
+            if _is_fullscreen(driver):
+                return True
         except Exception:
             try:
                 ActionChains(driver).send_keys(Keys.F11).perform()
-                time.sleep(0.3)
+                time.sleep(0.4)
+                if _is_fullscreen(driver):
+                    return True
             except Exception:
                 pass
-        return _is_fullscreen(driver) or True
-    except Exception:
+
+        return _is_fullscreen(driver)
+    except Exception as e:
+        logging.debug(f"Fullscreen activation failed: {e}")
         return False
 
 
@@ -1413,7 +1730,7 @@ def apply_media_settings(driver, rate, vol):
 
             setit();
 
-            // für einige Sekunden „gegenhalten“, falls src/MSE/Player neu setzt
+            // für einige Sekunden „gegenhalten", falls src/MSE/Player neu setzt
             if (!v.__bwPin){
             v.__bwPin = true;
             const evs = ['loadedmetadata','canplay','playing','ratechange','volumechange','stalled'];
