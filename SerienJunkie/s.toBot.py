@@ -26,7 +26,8 @@ MAX_RETRIES: int = int(os.getenv("BW_MAX_RETRIES", "3"))
 WAIT_TIMEOUT: int = int(os.getenv("BW_WAIT_TIMEOUT", "25"))
 PROGRESS_SAVE_INTERVAL: int = int(os.getenv("BW_PROGRESS_INTERVAL", "5"))
 
-USE_TOR_PROXY: bool = os.getenv("BW_USE_TOR", "true").lower() in {"1", "true", "yes"}
+#USE_TOR_PROXY: bool = os.getenv("BW_USE_TOR", "true").lower() in {"1", "true", "yes"}
+USE_TOR_PROXY: bool = False;
 TOR_SOCKS_PORT: int = int(os.getenv("BW_TOR_PORT", "9050"))
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -182,6 +183,11 @@ def start_browser() -> webdriver.Firefox:
             options.set_preference("network.proxy.socks", "127.0.0.1")
             options.set_preference("network.proxy.socks_port", TOR_SOCKS_PORT)
             options.set_preference("network.proxy.socks_remote_dns", True)
+        else:
+            options.set_preference("network.proxy.type", 0)
+            options.set_preference("network.proxy.socks", "")
+            options.set_preference("network.proxy.socks_port", 0)
+            options.set_preference("network.proxy.socks_remote_dns", False)
 
         if HEADLESS:
             options.headless = True
@@ -517,32 +523,56 @@ def _default_settings() -> Dict[str, Any]:
 
 
 # === NAVIGATION HANDLING --------------------------- ===
+def slugify_series(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9\-]+", "", s)
+    return s
+
 def parse_episode_info(url):
-    match = re.search(r"/serie/stream/([^/]+)/staffel-(\d+)/episode-(\d+)", url)
-    if match:
-        return match.group(1), int(match.group(2)), int(match.group(3))
+    m = re.search(r"/serie/stream/([^/]+)/staffel-(\d+)(?:/episode-(\d+))?", url)
+    if m:
+        series = m.group(1).lower()
+        season  = int(m.group(2))
+        episode = int(m.group(3)) if m.group(3) else None
+        return series, season, episode
     return None, None, None
 
 
 def navigate_to_episode(driver, series, season, episode, db):
+    series = slugify_series(series)  # <- Eingabe normalize
     target = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
     driver.get(target)
     arm_window_close_guard(driver)
     time.sleep(2)
 
     cur = driver.current_url
-    actual_series, actual_season, actual_episode = parse_episode_info(cur)
-    if not actual_series:
-        logging.error(f"Konnte URL nicht parsen: {cur}")
-        # trotzdem Sidebar/Unlock
-        inject_sidebar(driver, db)
-        clear_nav_lock(driver)
-        return season, episode
+    a_series, a_season, a_episode = parse_episode_info(cur)
 
-    # Akzeptiere Weiterleitungen als Wahrheit
-    inject_sidebar(driver, db)
-    clear_nav_lock(driver)
-    return actual_season, actual_episode
+    if a_series and a_season and a_episode is None:
+        try:
+            driver.switch_to.default_content()
+            link = WebDriverWait(driver, 6).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, f'a[href*="/staffel-{a_season}/episode-"]')
+                )
+            )
+            href = link.get_attribute("href")
+            if href:
+                driver.get(href)
+                time.sleep(1)
+                a_series, a_season, a_episode = parse_episode_info(driver.current_url)
+        except Exception:
+            driver.get(f"https://s.to/serie/stream/{a_series or series}/staffel-{a_season or season}/episode-1")
+            time.sleep(1)
+            a_series, a_season, a_episode = parse_episode_info(driver.current_url)
+
+    if not a_series:
+        inject_sidebar(driver, db); clear_nav_lock(driver)
+        return series, season, episode
+
+    inject_sidebar(driver, db); clear_nav_lock(driver)
+    return a_series or series, a_season or season, a_episode or episode
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -696,17 +726,20 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         )
         
         # Navigiere zur Episode und prüfe auf Weiterleitungen
-        actual_season, actual_episode = navigate_to_episode(driver, series, current_season, current_episode, db)
-        
-        # Falls wir zu einer anderen Staffel/Episode weitergeleitet wurden, aktualisiere die Variablen
-        if actual_season != current_season or actual_episode != current_episode:
+        new_series, actual_season, actual_episode = navigate_to_episode(driver, series, current_season, current_episode, db)
+
+        if new_series != series:
+            logging.info(f"Canonical slug applied: {series} → {new_series}")
+            series = new_series
+            is_one_piece = series.replace('-', '').replace(' ', '') in ('onepiece',)
+
+        if (actual_season != current_season) or (actual_episode is not None and actual_episode != current_episode):
             logging.info(f"Navigation angepasst: S{current_season}E{current_episode} → S{actual_season}E{actual_episode}")
             current_season = actual_season
-            current_episode = actual_episode
+            if actual_episode is not None:
+                current_episode = actual_episode
+                save_progress(series, current_season, current_episode, 0)
             
-            # Aktualisiere auch den Fortschritt mit den korrekten Werten
-            save_progress(series, current_season, current_episode, 0)
-        
         sync_settings_to_localstorage(driver)
 
         if not ensure_video_context(driver):
@@ -1416,8 +1449,9 @@ def enable_fullscreen(driver):
             driver.execute_script("try{ window.focus(); }catch(_){ }")
             # Echten Klick auf Body für User-Gesture
             try:
-                body = driver.find_element(By.TAG_NAME, "body")
-                ActionChains(driver).move_to_element(body).click().perform()
+                iframe = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+                _arm_iframe_for_fullscreen(driver, iframe)
+                ActionChains(driver).move_to_element(iframe).click().perform()
                 time.sleep(0.1)
             except Exception:
                 pass
@@ -2158,6 +2192,11 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
                 const item = c('.bw-series-item');
                 if (item) {
+                    // Check if click originated from input field or delete button - don't trigger navigation
+                    const clickedInput = e.target.closest && e.target.closest('input.bw-intro');
+                    const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
+                    if (clickedInput || clickedDelete) return;
+                    
                     if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
                     localStorage.setItem('bw_nav_inflight','1');
 
