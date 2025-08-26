@@ -4,44 +4,58 @@ setlocal enabledelayedexpansion
 REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
 echo Starting Binge Watching...
-echo Initializing Tor...
 
-REM === Start Tor process (hidden window) ===
-set TOR_PATH=%~dp0SerienJunkie\Browser\TorBrowser\Tor\tor.exe
+REM === Check Tor setting from settings.json ===
+set USE_TOR=false
+for /f "tokens=2 delims=:," %%a in ('findstr /C:"useTorProxy" settings.json') do (
+    set TOR_VALUE=%%a
+    set TOR_VALUE=!TOR_VALUE: =!
+    if "!TOR_VALUE!"=="true" set USE_TOR=true
+)
 
-REM Check if Tor is already running (Port 9050 in use)
-netstat -an | find "9050" >nul
-if %ERRORLEVEL% EQU 0 (
-    echo [?] Tor seems to be running already. Trying to Kill and restart the process...
-    taskkill /IM tor.exe /F >nul 2>&1
-    REM Wait until port 9050 is truly free
-    set /a waitcount=0
-    :waittorclose
-    timeout /t 1 >nul
+if "%USE_TOR%"=="true" (
+    echo [i] Tor DNS enabled in settings.json - starting Tor...
+    
+    REM === Start Tor process (hidden window) ===
+    set TOR_PATH=%~dp0SerienJunkie\Browser\TorBrowser\Tor\tor.exe
+    
+    REM Check if Tor is already running (Port 9050 in use)
     netstat -an | find "9050" >nul
     if %ERRORLEVEL% EQU 0 (
+        echo [?] Tor seems to be running already. Trying to Kill and restart the process...
+        taskkill /IM tor.exe /F >nul 2>&1
+        REM Wait until port 9050 is truly free
+        set /a waitcount=0
+        :waittorclose
+        timeout /t 1 >nul
+        netstat -an | find "9050" >nul
+        if %ERRORLEVEL% EQU 0 (
+            set /a waitcount+=1
+            if !waitcount! LSS 55 goto waittorclose
+            echo [X] Port 9050 did not become available after kill. Aborted execution.
+            pause
+            exit /b 1
+        )
+    )
+    
+    REM Start Tor now
+    start "" /b "%TOR_PATH%" >nul 2>&1
+    
+    REM Wait until port 9050 is open (Tor has started)
+    set /a waitcount=0
+    :waittorstart
+    timeout /t 1 >nul
+    netstat -an | find "9050" >nul
+    if %ERRORLEVEL% NEQ 0 (
         set /a waitcount+=1
-        if !waitcount! LSS 55 goto waittorclose
-        echo [X] Port 9050 did not become available after kill. Aborted execution.
+        if !waitcount! LSS 30 goto waittorstart
+        echo [X] port 9050 was not opened!
         pause
         exit /b 1
     )
-)
-
-REM Start goal now
-start "" /b "%TOR_PATH%" >nul 2>&1
-
-REM Wait until port 9050 is open (Tor has started)
-set /a waitcount=0
-:waittorstart
-timeout /t 1 >nul
-netstat -an | find "9050" >nul
-if %ERRORLEVEL% NEQ 0 (
-    set /a waitcount+=1
-    if !waitcount! LSS 30 goto waittorstart
-    echo [X] port 9050 was not opened!
-    pause
-    exit /b 1
+    echo [+] Tor started successfully.
+) else (
+    echo [i] Tor DNS disabled in settings.json - skipping Tor startup.
 )
 
 REM === Required Python modules ===
@@ -91,18 +105,20 @@ echo.
 echo [i] Python exit code: %EXITCODE%
 pause
 
-REM Cleanup & exit
-taskkill /IM tor.exe /F >nul 2>&1
-exit /b %EXITCODE%
-
 REM === Cleanup and exit depending on Python exit code ===
 if %EXITCODE% EQU 0 (
-    echo [=] BingeWatcher exited normally. Cleaning up...
-    taskkill /IM tor.exe /F >nul 2>&1
+    echo [=] BingeWatcher exited normally.
+    if "%USE_TOR%"=="true" (
+        echo [i] Cleaning up Tor process...
+        taskkill /IM tor.exe /F >nul 2>&1
+    )
     endlocal & exit /b 0
 ) else (
     echo [X] BingeWatcher exited with code %EXITCODE%.
     pause
-    taskkill /IM tor.exe /F >nul 2>&1
+    if "%USE_TOR%"=="true" (
+        echo [i] Cleaning up Tor process...
+        taskkill /IM tor.exe /F >nul 2>&1
+    )
     endlocal & exit /b %EXITCODE%
 )

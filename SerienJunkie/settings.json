@@ -3,5 +3,6 @@
   "autoSkipIntro": true,
   "autoNext": true,
   "playbackRate": 1,
-  "volume": 1
+  "volume": 1,
+  "useTorProxy": true
 }

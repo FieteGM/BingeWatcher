@@ -26,10 +26,6 @@ MAX_RETRIES: int = int(os.getenv("BW_MAX_RETRIES", "3"))
 WAIT_TIMEOUT: int = int(os.getenv("BW_WAIT_TIMEOUT", "25"))
 PROGRESS_SAVE_INTERVAL: int = int(os.getenv("BW_PROGRESS_INTERVAL", "5"))
 
-#USE_TOR_PROXY: bool = os.getenv("BW_USE_TOR", "true").lower() in {"1", "true", "yes"}
-USE_TOR_PROXY: bool = False;
-TOR_SOCKS_PORT: int = int(os.getenv("BW_TOR_PORT", "9050"))
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
 
@@ -51,6 +47,20 @@ logging.basicConfig(
 class BingeWatcherError(Exception):
     pass
 
+# Tor-Einstellung aus settings.json lesen
+def get_tor_setting() -> bool:
+    try:
+        if os.path.exists(SETTINGS_DB_FILE):
+            with open(SETTINGS_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return bool(data.get("useTorProxy", False))
+        return False
+    except Exception:
+        return False
+
+USE_TOR_PROXY: bool = get_tor_setting()
+TOR_SOCKS_PORT: int = int(os.getenv("BW_TOR_PORT", "9050"))
 
 # === UTILS: PROGRESS ===
 def load_progress() -> Dict[str, Dict[str, Any]]:
