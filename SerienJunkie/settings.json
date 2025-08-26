@@ -1,6 +1,7 @@
 {
   "autoFullscreen": true,
   "autoSkipIntro": true,
+  "autoSkipEndScreen": true,
   "autoNext": true,
   "playbackRate": 1,
   "volume": 1,

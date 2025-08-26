@@ -147,6 +147,30 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
         return False
 
 
+def get_end_skip_seconds(series: str) -> int:
+    try:
+        data = load_progress().get(series, {})
+        val = int(data.get("end_skip", 0))
+        return max(0, val)
+    except Exception:
+        return 0
+
+
+def set_end_skip_seconds(series: str, seconds: int) -> bool:
+    try:
+        seconds = max(0, int(seconds))
+        db = load_progress()
+        entry = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
+        entry["end_skip"] = seconds
+        db[series] = entry
+        with open(PROGRESS_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logging.error(f"End skip time could not be saved: {e}")
+        return False
+
+
 def norm_series_key(s: str) -> str:
     try:
         return _html.unescape(str(s or "")).strip()
@@ -460,6 +484,7 @@ def get_settings(driver):
     merged = {**file_s, **ls_s}
     merged["autoFullscreen"] = bool(merged.get("autoFullscreen", True))
     merged["autoSkipIntro"] = bool(merged.get("autoSkipIntro", True))
+    merged["autoSkipEndScreen"] = bool(merged.get("autoSkipEndScreen", True))
     merged["autoNext"] = bool(merged.get("autoNext", True))
     merged["playbackRate"] = float(merged.get("playbackRate", 1))
     merged["volume"] = float(merged.get("volume", 1))
@@ -526,6 +551,7 @@ def _default_settings() -> Dict[str, Any]:
     return {
         "autoFullscreen": True,
         "autoSkipIntro": True,
+        "autoSkipEndScreen": False,
         "autoNext": True,
         "playbackRate": 1.0,
         "volume": 1.0,
@@ -727,6 +753,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         settings = get_settings(driver)
         auto_fs = settings["autoFullscreen"]
         auto_skip = settings["autoSkipIntro"]
+        auto_skip_end = settings["autoSkipEndScreen"]
         auto_next = settings["autoNext"]
         rate = settings["playbackRate"]
         vol = settings["volume"]
@@ -883,7 +910,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             save_progress(series, current_season, current_episode, cur_pos)
 
             driver.switch_to.default_content()
-            html = build_items_html(load_progress())
+            html = build_items_html(load_progress(), settings)
             driver.execute_script(
                 "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                 html,
@@ -988,6 +1015,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     # Lokale Variablen MERGEN
                     auto_fs = bool(upd.get("autoFullscreen", auto_fs))
                     auto_skip = bool(upd.get("autoSkipIntro", auto_skip))
+                    auto_skip_end = bool(upd.get("autoSkipEndScreen", auto_skip_end))
                     auto_next = bool(upd.get("autoNext", auto_next))
                     rate = float(upd.get("playbackRate", rate))
                     vol = float(upd.get("volume", vol))
@@ -997,6 +1025,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         {
                             "autoFullscreen": auto_fs,
                             "autoSkipIntro": auto_skip,
+                            "autoSkipEndScreen": auto_skip_end,
                             "autoNext": auto_next,
                             "playbackRate": rate,
                             "volume": vol,
@@ -1037,6 +1066,16 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                         )
                     except Exception:
                         pass
+                    
+                    # UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
+                    try:
+                        html = build_items_html(load_progress(), settings)
+                        driver.execute_script(
+                            "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                            html,
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # ----------------------------------------------------------------
@@ -1050,7 +1089,8 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 handle_list_item_deletion(deleted)
                 try:
                     driver.switch_to.default_content()
-                    html = build_items_html(load_progress())
+                    settings = get_settings(driver)
+                    html = build_items_html(load_progress(), settings)
                     driver.execute_script(
                         "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                         html,
@@ -1110,6 +1150,27 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 save_progress(series, current_season, current_episode, int(current_pos))
                 last_save = now
 
+            # End-Screen-Skip Logik
+            if auto_skip_end and remaining_time <= 3:
+                end_skip_seconds = get_end_skip_seconds(series)
+                if end_skip_seconds > 0:
+                    try:
+                        driver.execute_script(
+                            """
+                            const v = document.querySelector('video');
+                            if (v && isFinite(v.duration)) {
+                                const skipTo = Math.max(0, v.duration - arguments[0]);
+                                if (v.currentTime < skipTo) {
+                                    v.currentTime = skipTo;
+                                    try { v.play().catch(()=>{}); } catch(_) {}
+                                }
+                            }
+                        """,
+                            end_skip_seconds,
+                        )
+                    except Exception:
+                        pass
+            
             if remaining_time <= 3:
                 break
 
@@ -1903,18 +1964,37 @@ def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
         return {}
 
 
-def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
+def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str, Any]] = None) -> str:
     items_html = []
     sorted_items = sorted(
         db.items(), key=lambda kv: float(kv[1].get("timestamp", 0)), reverse=True
     )
+    
+    # Settings für dynamische Anzeige verwenden
+    if settings is None:
+        settings = {}
+    auto_skip_intro = settings.get("autoSkipIntro", True)
+    auto_skip_end = settings.get("autoSkipEndScreen", False)
+    
     for series_name, data in sorted_items:
         season = int(data.get("season", 1))
         episode = int(data.get("episode", 1))
         position = int(data.get("position", 0))
         ts_val = float(data.get("timestamp", 0))
         intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
+        end_skip_val = int(data.get("end_skip", 0))  # Neue Variable für End-Screen-Skip
         safe_name = _html.escape(series_name, quote=True)
+
+        # Dynamische Eingabefelder basierend auf Settings
+        input_fields = []
+        
+        if auto_skip_intro:
+            input_fields.append(f'<input class="bw-intro" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Intro"/>')
+        
+        if auto_skip_end:
+            input_fields.append(f'<input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End"/>')
+        
+        input_fields_html = "".join(input_fields)
 
         items_html.append(
             f"""
@@ -1927,7 +2007,7 @@ def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
           <span style="opacity:.7;">{position}s</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-          <input class="bw-intro" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
+          {input_fields_html}
           <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:6px;border-radius:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;">✕</div>
         </div>
       </div>
@@ -1939,7 +2019,8 @@ def build_items_html(db: Dict[str, Dict[str, Any]]) -> str:
 def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> bool:
     try:
         driver.switch_to.default_content()
-        html_concat = build_items_html(db)
+        settings = get_settings(driver)
+        html_concat = build_items_html(db, settings)
         driver.execute_script(
             """
         (function(html){
@@ -2150,12 +2231,15 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                       <input type="checkbox" id="bwOptAutoFullscreen"/><span>Auto-Fullscreen</span>
                     </label>
-                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <input type="checkbox" id="bwOptAutoSkipIntro"/><span>Skip intro</span>
-                    </label>
-                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                      <input type="checkbox" id="bwOptAutoNext" checked/><span>Autoplay next episode</span>
-                    </label>
+                                         <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                       <input type="checkbox" id="bwOptAutoSkipIntro"/><span>Skip intro</span>
+                     </label>
+                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                       <input type="checkbox" id="bwOptAutoSkipEndScreen"/><span>Skip end screen</span>
+                     </label>
+                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                       <input type="checkbox" id="bwOptAutoNext" checked/><span>Autoplay next episode</span>
+                     </label>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                       <span>Playback Speed</span>
                       <select id="bwOptPlaybackRate">
@@ -2180,9 +2264,10 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
                     const x = id => document.getElementById(id);
-                    if (x('bwOptAutoFullscreen')) x('bwOptAutoFullscreen').checked = (s.autoFullscreen !== false);
-                    if (x('bwOptAutoSkipIntro')) x('bwOptAutoSkipIntro').checked = (s.autoSkipIntro !== false);
-                    if (x('bwOptAutoNext')) x('bwOptAutoNext').checked = (s.autoNext !== false);
+                                         if (x('bwOptAutoFullscreen')) x('bwOptAutoFullscreen').checked = (s.autoFullscreen !== false);
+                     if (x('bwOptAutoSkipIntro')) x('bwOptAutoSkipIntro').checked = (s.autoSkipIntro !== false);
+                     if (x('bwOptAutoSkipEndScreen')) x('bwOptAutoSkipEndScreen').checked = (s.autoSkipEndScreen !== false);
+                     if (x('bwOptAutoNext')) x('bwOptAutoNext').checked = (s.autoNext !== false);
                     if (x('bwOptPlaybackRate')) x('bwOptPlaybackRate').value = String(s.playbackRate ?? 1);
                     if (x('bwOptVolume')) x('bwOptVolume').value = String(Math.max(0, Math.min(1, s.volume ?? 1)));
                     if (x('bwVolumeVal')) x('bwVolumeVal').textContent = Math.round(parseFloat(x('bwOptVolume').value||'1')*100) + '%';
@@ -2194,18 +2279,26 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   } catch(_){}
                   p.addEventListener('click', (ev)=>{
                     if (ev.target && ev.target.id==='bwCloseSettings') { p.remove(); }
-                    if (ev.target && ev.target.id==='bwSaveSettings') {
-                      const next = {
-                        autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
-                        autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
-                        autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
-                        playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
-                        volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
-                      };
-                      localStorage.setItem('bw_settings', JSON.stringify(next));
-                      localStorage.setItem('bw_settings_update', JSON.stringify(next));
-                      p.remove();
-                    }
+                                         if (ev.target && ev.target.id==='bwSaveSettings') {
+                                              const next = {
+                          autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
+                          autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
+                          autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
+                          autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
+                          playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
+                          volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
+                        };
+                       localStorage.setItem('bw_settings', JSON.stringify(next));
+                       localStorage.setItem('bw_settings_update', JSON.stringify(next));
+                       
+                       // UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
+                       try {
+                         // Trigger UI update by setting a flag
+                         localStorage.setItem('bw_ui_update_needed', '1');
+                       } catch(_) {}
+                       
+                       p.remove();
+                     }
                   });
                   return;
                 }
@@ -2217,12 +2310,13 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   return;
                 }
 
-                const item = c('.bw-series-item');
-                if (item) {
-                    // Check if click originated from input field or delete button - don't trigger navigation
-                    const clickedInput = e.target.closest && e.target.closest('input.bw-intro');
-                    const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
-                    if (clickedInput || clickedDelete) return;
+                                 const item = c('.bw-series-item');
+                 if (item) {
+                     // Check if click originated from input field or delete button - don't trigger navigation
+                     const clickedInput = e.target.closest && e.target.closest('input.bw-intro');
+                     const clickedEndInput = e.target.closest && e.target.closest('input.bw-end');
+                     const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
+                     if (clickedInput || clickedEndInput || clickedDelete) return;
                     
                     if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
                     localStorage.setItem('bw_nav_inflight','1');
@@ -2244,19 +2338,31 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 }
               });
 
-              // Debounce für Intro-Input
-              if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
-              d.addEventListener('input', (e)=>{
-                const inp = e.target.closest && e.target.closest('input.bw-intro');
-                if (!inp) return;
-                const series = inp.dataset.series; if (!series) return;
-                const key = '__deb_' + series;
-                if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
-                window.__bwDebouncers[key] = setTimeout(()=>{
-                  const seconds = parseInt(inp.value||'0',10)||0;
-                  localStorage.setItem('bw_intro_update', JSON.stringify({series, seconds}));
-                }, 600);
-              });
+                             // Debounce für Intro-Input und End-Input
+               if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
+               d.addEventListener('input', (e)=>{
+                 const inp = e.target.closest && e.target.closest('input.bw-intro');
+                 if (inp) {
+                   const series = inp.dataset.series; if (!series) return;
+                   const key = '__deb_intro_' + series;
+                   if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                   window.__bwDebouncers[key] = setTimeout(()=>{
+                     const seconds = parseInt(inp.value||'0',10)||0;
+                     localStorage.setItem('bw_intro_update', JSON.stringify({series, seconds}));
+                   }, 600);
+                 }
+                 
+                 const endInp = e.target.closest && e.target.closest('input.bw-end');
+                 if (endInp) {
+                   const series = endInp.dataset.series; if (!series) return;
+                   const key = '__deb_end_' + series;
+                   if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                   window.__bwDebouncers[key] = setTimeout(()=>{
+                     const seconds = parseInt(endInp.value||'0',10)||0;
+                     localStorage.setItem('bw_end_update', JSON.stringify({series, seconds}));
+                   }, 600);
+                 }
+               });
 
               // APIs & Keepalive
               window.__bwLastHTML = '';
@@ -2340,6 +2446,7 @@ def main() -> None:
                 if not driver.execute_script(
                     "return !!document.getElementById('bingeSidebar');"
                 ):
+                    settings = get_settings(driver)
                     inject_sidebar(driver, load_progress())
                     sync_settings_to_localstorage(driver)
 
@@ -2374,9 +2481,10 @@ def main() -> None:
                     )
                     if tod:
                         handle_list_item_deletion(str(tod))
+                        settings = get_settings(driver)
                         inject_sidebar(driver, load_progress())
                         sync_settings_to_localstorage(driver)
-                        html = build_items_html(load_progress())
+                        html = build_items_html(load_progress(), settings)
                         driver.execute_script(
                             "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                             html,
@@ -2394,13 +2502,36 @@ def main() -> None:
                     """
                     )
                     if need:
+                        settings = get_settings(driver)
                         inject_sidebar(driver, load_progress())
                         sync_settings_to_localstorage(driver)
-                        html = build_items_html(load_progress())
+                        html = build_items_html(load_progress(), settings)
                         driver.execute_script(
                             "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                             html,
                         )
+                except Exception:
+                    pass
+
+                # Handle UI update needed (from settings panel save)
+                try:
+                    ui_update_needed = driver.execute_script(
+                        """
+                        let r = localStorage.getItem('bw_ui_update_needed');
+                        if (r) localStorage.removeItem('bw_ui_update_needed');
+                        return r;
+                    """
+                    )
+                    if ui_update_needed:
+                        # UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
+                        try:
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -2450,7 +2581,7 @@ def main() -> None:
                             set_intro_skip_seconds(ser, secs)
 
                             # UI sofort aktualisieren
-                            html = build_items_html(load_progress())
+                            html = build_items_html(load_progress(), get_settings(driver))
                             driver.execute_script(
                                 "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                                 html,
@@ -2478,6 +2609,37 @@ def main() -> None:
                                     )
                             except Exception:
                                 pass
+                except Exception:
+                    pass
+
+                # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
+                try:
+                    upd = driver.execute_script(
+                        """
+                        let r = localStorage.getItem('bw_end_update');
+                        if (r) localStorage.removeItem('bw_end_update');
+                        return r;
+                    """
+                    )
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser:
+                            set_end_skip_seconds(ser, secs)
+
+                            # UI sofort aktualisieren
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
                 except Exception:
                     pass
 
