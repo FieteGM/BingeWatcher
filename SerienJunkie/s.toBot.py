@@ -763,15 +763,13 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 break
 
         play_video(driver)
-
+        apply_media_settings(driver, rate, vol)
+        
         if position and position > 0:
             skip_intro(driver, position)
         elif auto_skip:
             skip_intro(driver, get_intro_skip_seconds(series))
         position = 0
-
-        play_video(driver)
-        apply_media_settings(driver, rate, vol)
 
         recovery_tries = 0
         while detect_232011(driver) and recovery_tries < 3:
@@ -825,7 +823,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         if auto_fs and not HEADLESS:
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
-            time.sleep(0.25)
+            time.sleep(0.1)
             
             ok = enable_fullscreen(driver)
             
@@ -838,11 +836,11 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                     ensure_video_context(driver)
                     _hide_sidebar(driver, True)
                     ensure_video_context(driver)
-                    time.sleep(0.25)
+                    time.sleep(0.1)
                     ok = enable_fullscreen(driver)
 
         try:
-            for _ in range(12):
+            for _ in range(8):
                 playing = driver.execute_script(
                     "const v=document.querySelector('video'); return !!(v && !v.paused && v.readyState>2);"
                 )
@@ -851,7 +849,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 driver.execute_script(
                     "const v=document.querySelector('video'); if(v){ try{ v.focus(); v.play().catch(()=>{}); }catch(e){} }"
                 )
-                time.sleep(0.2)
+                time.sleep(0.1)
         except Exception:
             pass
 
@@ -1393,7 +1391,26 @@ def play_video(driver):
             "const v=document.querySelector('video'); if(v){ v.muted=true; }"
         )
 
-        # 1) typische Overlay-Buttons
+        # 1) Schneller: Direkt play() versuchen (häufig erfolgreich)
+        try:
+            driver.execute_script(
+                """
+                const v=document.querySelector('video');
+                if (v && v.paused) { 
+                    try{ 
+                        v.play().catch(()=>{}); 
+                        return true;
+                    }catch(e){ 
+                        return false; 
+                    } 
+                }
+                return true;
+            """
+            )
+        except Exception:
+            pass
+
+        # 2) Falls nötig: Overlay-Buttons klicken (reduzierte Pausen)
         overlay_selectors = [
             ".vjs-big-play-button",
             ".jw-display-icon-container",
@@ -1408,19 +1425,22 @@ def play_video(driver):
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 if el.is_displayed() and el.is_enabled():
                     ActionChains(driver).move_to_element(el).click().perform()
-                    time.sleep(0.15)
+                    time.sleep(0.08)
                     break
             except Exception:
                 pass
 
-        # 2) direkt auf das <video> klicken
-        v = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "video"))
-        )
-        ActionChains(driver).move_to_element(v).click().perform()
-        time.sleep(0.05)
+        # 3) Falls nötig: direkt auf das <video> klicken
+        try:
+            v = WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.TAG_NAME, "video"))
+            )
+            ActionChains(driver).move_to_element(v).click().perform()
+            time.sleep(0.03)
+        except Exception:
+            pass
 
-        # 3) explizit play() (Promise ignorieren)
+        # 4) Finaler play() Aufruf
         driver.execute_script(
             """
             const v=document.querySelector('video');
@@ -1459,10 +1479,10 @@ def enable_fullscreen(driver):
             driver.execute_script("try{ window.focus(); }catch(_){ }")
             # Echten Klick auf Body für User-Gesture
             try:
-                iframe = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+                iframe = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
                 _arm_iframe_for_fullscreen(driver, iframe)
                 ActionChains(driver).move_to_element(iframe).click().perform()
-                time.sleep(0.1)
+                time.sleep(0.05)
             except Exception:
                 pass
         finally:
@@ -1501,20 +1521,17 @@ def enable_fullscreen(driver):
                 elements = driver.find_elements(By.CSS_SELECTOR, sel)
                 for el in elements:
                     if el.is_displayed() and el.is_enabled():
-                        # Mehrere Klick-Varianten versuchen
                         try:
-                            # Direkter Klick
                             ActionChains(driver).move_to_element(el).click().perform()
-                            time.sleep(0.3)
+                            time.sleep(0.15)
                             if _is_fullscreen(driver):
                                 return True
                         except Exception:
                             pass
                         
                         try:
-                            # JavaScript-Klick als Fallback
                             driver.execute_script("arguments[0].click();", el)
-                            time.sleep(0.3)
+                            time.sleep(0.15)
                             if _is_fullscreen(driver):
                                 return True
                         except Exception:
@@ -1540,10 +1557,10 @@ def enable_fullscreen(driver):
             )
             # Erst einfacher Klick für User-Gesture
             ActionChains(driver).move_to_element(v).click().perform()
-            time.sleep(0.1)
+            time.sleep(0.05)
             # Dann Doppelklick
             ActionChains(driver).move_to_element(v).double_click().perform()
-            time.sleep(0.3)
+            time.sleep(0.15)
             if _is_fullscreen(driver):
                 return True
         except Exception:
@@ -1575,9 +1592,9 @@ def enable_fullscreen(driver):
                 }
             """
             )
-            # 'f' Taste senden
-            ActionChains(driver).send_keys("f").pause(0.1).perform()
-            time.sleep(0.3)
+
+            ActionChains(driver).send_keys("f").pause(0.05).perform()
+            time.sleep(0.15)
             if _is_fullscreen(driver):
                 return True
         except Exception:
@@ -1602,7 +1619,7 @@ def enable_fullscreen(driver):
                     
                     # Iframe klicken für User-Gesture
                     ActionChains(driver).move_to_element(target_iframe).click().perform()
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     
                     # Vollbild über Iframe versuchen
                     driver.execute_script(
@@ -1615,7 +1632,7 @@ def enable_fullscreen(driver):
                     """,
                         target_iframe,
                     )
-                    time.sleep(0.4)
+                    time.sleep(0.2)
                     
                     if _is_fullscreen(driver):
                         try:
@@ -1667,7 +1684,7 @@ def enable_fullscreen(driver):
                 }
             """
             )
-            time.sleep(0.3)
+            time.sleep(0.15)
             if _is_fullscreen(driver):
                 return True
         except Exception:
@@ -1725,7 +1742,7 @@ def enable_fullscreen(driver):
                 }
             """
             )
-            time.sleep(0.4)
+            time.sleep(0.2)
             if _is_fullscreen(driver):
                 return True
         except Exception:
@@ -1734,13 +1751,13 @@ def enable_fullscreen(driver):
         # 9. Browser-Fenster-Vollbild als Fallback
         try:
             driver.fullscreen_window()
-            time.sleep(0.3)
+            time.sleep(0.15)
             if _is_fullscreen(driver):
                 return True
         except Exception:
             try:
                 ActionChains(driver).send_keys(Keys.F11).perform()
-                time.sleep(0.4)
+                time.sleep(0.2)
                 if _is_fullscreen(driver):
                     return True
             except Exception:
