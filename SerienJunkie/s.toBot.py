@@ -32,10 +32,29 @@ GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, "progress.json")
 SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 
+# === STREAMING PROVIDERS ===
+STREAMING_PROVIDERS = {
+    "s.to": {
+        "name": "SerienJunkie",
+        "base_url": "https://s.to/",
+        "url_pattern": r"https://s\.to/serie/stream/([^/]+)/staffel-(\d+)(?:/episode-(\d+))?",
+        "episode_url_template": "https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}",
+        "color": "#3b82f6"
+    },
+    "aniworld.to": {
+        "name": "AniWorld",
+        "base_url": "https://aniworld.to/",
+        "url_pattern": r"https://aniworld\.to/anime/stream/([^/]+)/staffel-(\d+)/episode-(\d+)",
+        "episode_url_template": "https://aniworld.to/anime/stream/{series}/staffel-{season}/episode-{episode}",
+        "color": "#8b5cf6"
+    }
+}
+
 # === GLOBAL STATE ===
 current_series: Optional[str] = None
 current_season: Optional[int] = None
 current_episode: Optional[int] = None
+current_provider: Optional[str] = None
 is_playing: bool = False
 should_quit: bool = False
 
@@ -85,6 +104,7 @@ def save_progress(
     episode: int,
     position: int,
     extra: Optional[Dict[str, Any]] = None,
+    provider: str = "s.to",
 ) -> bool:
     try:
         db = load_progress()
@@ -95,6 +115,7 @@ def save_progress(
                 "episode": int(episode),
                 "position": int(position),
                 "timestamp": time.time(),
+                "provider": provider,  # Speichere den Provider
             }
         )
         if extra:
@@ -565,50 +586,76 @@ def slugify_series(s: str) -> str:
     s = re.sub(r"[^a-z0-9\-]+", "", s)
     return s
 
+def detect_provider_from_url(url: str) -> Optional[str]:
+    """Erkennt den Streaming-Anbieter aus der URL."""
+    for provider_id, provider_info in STREAMING_PROVIDERS.items():
+        if provider_id in url:
+            return provider_id
+    return None
+
 def parse_episode_info(url):
-    m = re.search(r"/serie/stream/([^/]+)/staffel-(\d+)(?:/episode-(\d+))?", url)
-    if m:
-        series = m.group(1).lower()
-        season  = int(m.group(2))
-        episode = int(m.group(3)) if m.group(3) else None
-        return series, season, episode
-    return None, None, None
+    """Erweiterte Episode-Info-Parsing für verschiedene Streaming-Anbieter."""
+    for provider_id, provider_info in STREAMING_PROVIDERS.items():
+        m = re.search(provider_info["url_pattern"], url)
+        if m:
+            series = m.group(1).lower()
+            season = int(m.group(2))
+            episode = int(m.group(3)) if m.group(3) else None
+            return series, season, episode, provider_id
+    return None, None, None, None
 
 
-def navigate_to_episode(driver, series, season, episode, db):
+def navigate_to_episode(driver, series, season, episode, db, provider="s.to"):
+    """Navigiert zu einer Episode mit Unterstützung für verschiedene Streaming-Anbieter."""
     series = slugify_series(series)  # <- Eingabe normalize
-    target = f"https://s.to/serie/stream/{series}/staffel-{season}/episode-{episode}"
+    
+    # Verwende den entsprechenden Anbieter
+    provider_info = STREAMING_PROVIDERS.get(provider, STREAMING_PROVIDERS["s.to"])
+    target = provider_info["episode_url_template"].format(
+        series=series, season=season, episode=episode
+    )
+    
     driver.get(target)
     arm_window_close_guard(driver)
     time.sleep(2)
 
     cur = driver.current_url
-    a_series, a_season, a_episode = parse_episode_info(cur)
+    a_series, a_season, a_episode, a_provider = parse_episode_info(cur)
 
     if a_series and a_season and a_episode is None:
         try:
             driver.switch_to.default_content()
+            # Anbieter-spezifische CSS-Selektoren
+            if provider == "s.to":
+                selector = f'a[href*="/staffel-{a_season}/episode-"]'
+            elif provider == "aniworld.to":
+                selector = f'a[href*="/staffel-{a_season}/episode-"]'
+            else:
+                selector = f'a[href*="/staffel-{a_season}/episode-"]'
+                
             link = WebDriverWait(driver, 6).until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, f'a[href*="/staffel-{a_season}/episode-"]')
-                )
+                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
             )
             href = link.get_attribute("href")
             if href:
                 driver.get(href)
                 time.sleep(1)
-                a_series, a_season, a_episode = parse_episode_info(driver.current_url)
+                a_series, a_season, a_episode, a_provider = parse_episode_info(driver.current_url)
         except Exception:
-            driver.get(f"https://s.to/serie/stream/{a_series or series}/staffel-{a_season or season}/episode-1")
+            # Fallback zur ersten Episode
+            fallback_url = provider_info["episode_url_template"].format(
+                series=a_series or series, season=a_season or season, episode=1
+            )
+            driver.get(fallback_url)
             time.sleep(1)
-            a_series, a_season, a_episode = parse_episode_info(driver.current_url)
+            a_series, a_season, a_episode, a_provider = parse_episode_info(driver.current_url)
 
     if not a_series:
         inject_sidebar(driver, db); clear_nav_lock(driver)
-        return series, season, episode
+        return series, season, episode, provider
 
     inject_sidebar(driver, db); clear_nav_lock(driver)
-    return a_series or series, a_season or season, a_episode or episode
+    return a_series or series, a_season or season, a_episode or episode, a_provider or provider
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -663,7 +710,7 @@ def ensure_video_context(driver) -> bool:
         return False
 
 
-def safe_save_progress(driver, series, season, episode) -> int:
+def safe_save_progress(driver, series, season, episode, provider="s.to") -> int:
     pos = 0
     try:
         if ensure_video_context(driver):
@@ -675,7 +722,7 @@ def safe_save_progress(driver, series, season, episode) -> int:
                 )
             except Exception:
                 pos = 0
-        save_progress(series, season, episode, pos)
+        save_progress(series, season, episode, pos, provider=provider)
     except Exception:
         pass
     return pos
@@ -740,10 +787,11 @@ def popout_player_iframe(driver) -> bool:
         return False
 
 
-def play_episodes_loop(driver, series, season, episode, position=0):
+def play_episodes_loop(driver, series, season, episode, position=0, provider="s.to"):
     global should_quit
     current_episode = episode
     current_season = season
+    current_provider = provider
     
     # Spezielle Behandlung für One Piece (Staffel 11 Problem)
     is_one_piece = series.lower() in ['one-piece', 'one piece', 'onepiece']
@@ -763,19 +811,20 @@ def play_episodes_loop(driver, series, season, episode, position=0):
         )
         
         # Navigiere zur Episode und prüfe auf Weiterleitungen
-        new_series, actual_season, actual_episode = navigate_to_episode(driver, series, current_season, current_episode, db)
+        new_series, actual_season, actual_episode, actual_provider = navigate_to_episode(driver, series, current_season, current_episode, db, current_provider)
 
         if new_series != series:
             logging.info(f"Canonical slug applied: {series} → {new_series}")
             series = new_series
             is_one_piece = series.replace('-', '').replace(' ', '') in ('onepiece',)
 
-        if (actual_season != current_season) or (actual_episode is not None and actual_episode != current_episode):
-            logging.info(f"Navigation angepasst: S{current_season}E{current_episode} → S{actual_season}E{actual_episode}")
+        if (actual_season != current_season) or (actual_episode is not None and actual_episode != current_episode) or (actual_provider != current_provider):
+            logging.info(f"Navigation angepasst: S{current_season}E{current_episode} → S{actual_season}E{actual_episode} (Provider: {current_provider} → {actual_provider})")
             current_season = actual_season
+            current_provider = actual_provider
             if actual_episode is not None:
                 current_episode = actual_episode
-                save_progress(series, current_season, current_episode, 0)
+                save_progress(series, current_season, current_episode, 0, provider=current_provider)
             
         sync_settings_to_localstorage(driver)
 
@@ -907,7 +956,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             except Exception:
                 cur_pos = 0
 
-            save_progress(series, current_season, current_episode, cur_pos)
+            save_progress(series, current_season, current_episode, cur_pos, provider=current_provider)
 
             driver.switch_to.default_content()
             html = build_items_html(load_progress(), settings)
@@ -929,7 +978,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             flags = poll_ui_flags(driver)
 
             if flags.get("sel"):
-                safe_save_progress(driver, series, current_season, current_episode)
+                safe_save_progress(driver, series, current_season, current_episode, current_provider)
                 cleanup_before_switch(driver)
                 time.sleep(0.5)
 
@@ -949,19 +998,19 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             try:
                 driver.switch_to.default_content()
                 cur_url = driver.current_url or ""
-                s2, se2, ep2 = parse_episode_info(cur_url)
+                s2, se2, ep2, p2 = parse_episode_info(cur_url)
 
                 if s2 == series and (se2 is not None and ep2 is not None) \
                 and (se2 != current_season or ep2 != current_episode):
                     # Interne Auto-Navigation (z. B. Next Episode / Redirect)
-                    safe_save_progress(driver, series, current_season, current_episode)
+                    safe_save_progress(driver, series, current_season, current_episode, current_provider)
                     current_season, current_episode = se2, ep2
                     auto_nav = True
                     break  # raus aus innerer Loop, outer Loop startet mit aktualisiertem Zustand
 
                 elif s2 and s2 != series:
                     # Wirklicher Serienwechsel (vom User)
-                    safe_save_progress(driver, series, current_season, current_episode)
+                    safe_save_progress(driver, series, current_season, current_episode, current_provider)
                     cleanup_before_switch(driver)
                     time.sleep(0.5)
                     user_switched = True
@@ -1147,7 +1196,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
             now = time.time()
             if now - last_save >= PROGRESS_SAVE_INTERVAL:
                 current_pos = get_current_position(driver)
-                save_progress(series, current_season, current_episode, int(current_pos))
+                save_progress(series, current_season, current_episode, int(current_pos), provider=current_provider)
                 last_save = now
 
             # End-Screen-Skip Logik
@@ -1210,7 +1259,7 @@ def play_episodes_loop(driver, series, season, episode, position=0):
                 parsed_info = parse_episode_info(current_url)
                 
                 if parsed_info:
-                    test_series, test_season, test_episode = parsed_info
+                    test_series, test_season, test_episode, test_provider = parsed_info
                     
                     # Prüfe explizit auf Staffel 11 Weiterleitung
                     if test_series == series and test_season == 11:
@@ -1965,55 +2014,101 @@ def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
 
 
 def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str, Any]] = None) -> str:
-    items_html = []
-    sorted_items = sorted(
-        db.items(), key=lambda kv: float(kv[1].get("timestamp", 0)), reverse=True
-    )
-    
-    # Settings für dynamische Anzeige verwenden
+    """Erstellt HTML für die Sidebar mit Streaming-Anbieter-Tabs."""
     if settings is None:
         settings = {}
     auto_skip_intro = settings.get("autoSkipIntro", True)
     auto_skip_end = settings.get("autoSkipEndScreen", False)
     
-    for series_name, data in sorted_items:
-        season = int(data.get("season", 1))
-        episode = int(data.get("episode", 1))
-        position = int(data.get("position", 0))
-        ts_val = float(data.get("timestamp", 0))
-        intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
-        end_skip_val = int(data.get("end_skip", 0))  # Neue Variable für End-Screen-Skip
-        safe_name = _html.escape(series_name, quote=True)
+    # Gruppiere Serien nach Anbietern
+    provider_series = {}
+    for series_name, data in db.items():
+        provider = data.get("provider", "s.to")  # Standard ist s.to für Backward-Kompatibilität
+        if provider not in provider_series:
+            provider_series[provider] = []
+        provider_series[provider].append((series_name, data))
+    
+    # Erstelle Tabs für jeden Anbieter
+    tabs_html = []
+    content_html = []
+    
+    for provider_id, series_list in provider_series.items():
+        provider_info = STREAMING_PROVIDERS.get(provider_id, STREAMING_PROVIDERS["s.to"])
+        
+        # Sortiere Serien nach Timestamp
+        sorted_series = sorted(series_list, key=lambda kv: float(kv[1].get("timestamp", 0)), reverse=True)
+        
+        # Tab-Header
+        tabs_html.append(f'''
+            <button class="bw-provider-tab" data-provider="{provider_id}" 
+                    style="flex:1;padding:8px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+                           color:#94a3b8;border-radius:8px 8px 0 0;cursor:pointer;font-size:12px;font-weight:500;
+                           transition:all .2s ease;border-bottom:none;">
+                <div style="display:flex;align-items:center;gap:6px;justify-content:center;">
+                    <div style="width:8px;height:8px;border-radius:50%;background:{provider_info['color']};"></div>
+                    {provider_info['name']}
+                </div>
+            </button>
+        ''')
+        
+        # Tab-Inhalt
+        series_items = []
+        for series_name, data in sorted_series:
+            season = int(data.get("season", 1))
+            episode = int(data.get("episode", 1))
+            position = int(data.get("position", 0))
+            ts_val = float(data.get("timestamp", 0))
+            intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
+            end_skip_val = int(data.get("end_skip", 0))
+            safe_name = _html.escape(series_name, quote=True)
 
-        # Dynamische Eingabefelder basierend auf Settings
-        input_fields = []
-        
-        if auto_skip_intro:
-            input_fields.append(f'<input class="bw-intro" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Intro"/>')
-        
-        if auto_skip_end:
-            input_fields.append(f'<input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End"/>')
-        
-        input_fields_html = "".join(input_fields)
+            # Dynamische Eingabefelder basierend auf Settings
+            input_fields = []
+            
+            if auto_skip_intro:
+                input_fields.append(f'<input class="bw-intro" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Intro"/>')
+            
+            if auto_skip_end:
+                input_fields.append(f'<input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End"/>')
+            
+            input_fields_html = "".join(input_fields)
 
-        items_html.append(
-            f"""
-      <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}"
-           style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
-                  border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
-        <div style="font-weight:600;font-size:14px;color:#f8fafc;margin-bottom:4px;">{safe_name}</div>
-        <div style="font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:8px;">
-          <span style="background:rgba(59,130,246,.2);padding:2px 6px;border-radius:4px;border:1px solid rgba(59,130,246,.3);">S{season}E{episode}</span>
-          <span style="opacity:.7;">{position}s</span>
+            series_items.append(f"""
+                <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}" data-provider="{provider_id}"
+                     style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
+                            border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
+                    <div style="font-weight:600;font-size:14px;color:#f8fafc;margin-bottom:4px;">{safe_name}</div>
+                    <div style="font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:8px;">
+                        <span style="background:{provider_info['color']}20;padding:2px 6px;border-radius:4px;border:1px solid {provider_info['color']}40;">S{season}E{episode}</span>
+                        <span style="opacity:.7;">{position}s</span>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+                        {input_fields_html}
+                        <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:6px;border-radius:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;">✕</div>
+                    </div>
+                </div>
+            """)
+        
+        content_html.append(f'''
+            <div class="bw-provider-content" data-provider="{provider_id}" style="display:flex;flex-direction:column;gap:6px;">
+                {"".join(series_items)}
+            </div>
+        ''')
+    
+    # Kombiniere alles
+    tabs_container = f'''
+        <div class="bw-provider-tabs" style="display:flex;gap:2px;margin-bottom:12px;">
+            {"".join(tabs_html)}
         </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-          {input_fields_html}
-          <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:6px;border-radius:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;">✕</div>
+    '''
+    
+    content_container = f'''
+        <div class="bw-provider-contents">
+            {"".join(content_html)}
         </div>
-      </div>
-    """
-        )
-    return "\n".join(items_html)
+    '''
+    
+    return tabs_container + content_container
 
 
 def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> bool:
@@ -2061,6 +2156,15 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       <option value="time">Last watched</option>
                       <option value="name">Name</option>
                   </select>
+                  </div>
+                  
+                  <!-- Website Selection Switch -->
+                  <div style="margin-top:8px;display:flex;align-items:center;gap:8px;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);">
+                      <span style="font-size:12px;color:#94a3b8;">Website:</span>
+                      <div style="display:flex;gap:4px;flex:1;">
+                          <button id="bwProviderS" class="bw-provider-switch" data-provider="s.to" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.15);color:#93c5fd;font-size:11px;cursor:pointer;transition:all .2s ease;">SerienJunkie</button>
+                          <button id="bwProviderA" class="bw-provider-switch" data-provider="aniworld.to" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.15);color:#c4b5fd;font-size:11px;cursor:pointer;transition:all .2s ease;">AniWorld</button>
+                      </div>
                   </div>
               </div>
 
@@ -2146,6 +2250,49 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 opacity:1; pointer-events:auto;
                 transition: opacity .16s ease .05s;
               }
+              
+              /* Provider Tabs */
+              #bingeSidebar .bw-provider-tabs {
+                border-bottom: 1px solid rgba(255,255,255,.1);
+                margin-bottom: 12px;
+              }
+              
+              #bingeSidebar .bw-provider-tab {
+                transition: all .2s ease;
+              }
+              
+              #bingeSidebar .bw-provider-tab:hover {
+                background: rgba(255,255,255,.08) !important;
+                color: #f8fafc !important;
+              }
+              
+              #bingeSidebar .bw-provider-content {
+                display: none;
+              }
+              
+              #bingeSidebar .bw-provider-content:first-child {
+                display: flex;
+              }
+              
+              /* Provider Switch Buttons */
+              #bingeSidebar .bw-provider-switch {
+                border: 1px solid rgba(148,163,184,.2) !important;
+                background: rgba(148,163,184,.08) !important;
+                color: #94a3b8 !important;
+              }
+              
+              #bingeSidebar .bw-provider-switch.active {
+                border-color: rgba(255,255,255,.3) !important;
+                background: rgba(255,255,255,.15) !important;
+                color: #f8fafc !important;
+                box-shadow: 0 0 0 1px rgba(255,255,255,.1);
+              }
+              
+              #bingeSidebar .bw-provider-switch:hover {
+                border-color: rgba(255,255,255,.25) !important;
+                background: rgba(255,255,255,.12) !important;
+                transform: translateY(-1px);
+              }
               `;
               d.appendChild(style);
   
@@ -2156,6 +2303,97 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               };
               if (localStorage.getItem('bw_sidebar_collapsed') === '1') d.setAttribute('data-collapsed','1');
               setHandleTitle();
+              
+              // Provider Detection from URL
+              function detectProviderFromUrl(url) {
+                if (url.includes('s.to')) {
+                  return 's.to';
+                } else if (url.includes('aniworld.to')) {
+                  return 'aniworld.to';
+                }
+                return null;
+              }
+              
+              // Update UI based on current URL
+              function updateUIFromCurrentUrl() {
+                const currentUrl = window.location.href;
+                const detectedProvider = detectProviderFromUrl(currentUrl);
+                
+                if (detectedProvider) {
+                  // Update website switch highlighting
+                  updateProviderSwitch(detectedProvider);
+                  
+                  // Switch to correct provider tab (only if elements exist)
+                  if (typeof switchProviderTab === 'function') {
+                    switchProviderTab(detectedProvider);
+                  }
+                }
+              }
+              
+              // Website Selection Switch Management
+              function updateProviderSwitch(providerId) {
+                // Alle Switch-Buttons zurücksetzen
+                const switchButtons = document.querySelectorAll('.bw-provider-switch');
+                if (switchButtons.length > 0) {
+                  switchButtons.forEach(btn => {
+                    btn.classList.remove('active');
+                  });
+                  
+                  // Aktiven Button markieren
+                  const activeBtn = document.querySelector(`.bw-provider-switch[data-provider="${providerId}"]`);
+                  if (activeBtn) {
+                    activeBtn.classList.add('active');
+                  }
+                }
+                
+                // Provider in localStorage speichern
+                localStorage.setItem('bw_active_provider', providerId);
+                localStorage.setItem('bw_website_switch', providerId);
+              }
+              
+              // Initialisiere UI basierend auf aktueller URL
+              setTimeout(() => {
+                updateUIFromCurrentUrl();
+              }, 300);
+              
+              // Listen for URL changes (navigation, back/forward buttons)
+              let lastUrl = window.location.href;
+              const urlObserver = new MutationObserver(() => {
+                if (window.location.href !== lastUrl) {
+                  lastUrl = window.location.href;
+                  setTimeout(() => updateUIFromCurrentUrl(), 100);
+                }
+              });
+              
+              // Observe changes to the document
+              urlObserver.observe(document, { subtree: true, childList: true });
+              
+              // Also listen for popstate events (back/forward buttons)
+              window.addEventListener('popstate', () => {
+                setTimeout(() => updateUIFromCurrentUrl(), 100);
+              });
+              
+              // Website Switch Click Handler
+              d.addEventListener('click', (e) => {
+                const switchBtn = e.target.closest('.bw-provider-switch');
+                if (switchBtn) {
+                  const providerId = switchBtn.getAttribute('data-provider');
+                  if (providerId) {
+                    updateProviderSwitch(providerId);
+                    
+                    // Navigate to the selected provider's website
+                    const providerUrls = {
+                      's.to': 'https://s.to/',
+                      'aniworld.to': 'https://aniworld.to/'
+                    };
+                    
+                    const targetUrl = providerUrls[providerId];
+                    if (targetUrl) {
+                      window.location.href = targetUrl;
+                    }
+                  }
+                }
+              });
   
               /* Peek via JS, wenn nur der Griff gehovert wird */
               tgl.addEventListener('mouseenter', ()=> {
@@ -2189,9 +2427,53 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 document.cookie = 'bw_quit=1; path=/';
               });
 
+              // Provider Tab Management
+              function switchProviderTab(providerId) {
+                // Alle Tabs deaktivieren
+                document.querySelectorAll('.bw-provider-tab').forEach(tab => {
+                  tab.style.background = 'rgba(255,255,255,.05)';
+                  tab.style.color = '#94a3b8';
+                  tab.style.borderBottom = 'none';
+                });
+                
+                // Alle Contents ausblenden
+                document.querySelectorAll('.bw-provider-content').forEach(content => {
+                  content.style.display = 'none';
+                });
+                
+                // Gewählten Tab aktivieren
+                const activeTab = document.querySelector(`[data-provider="${providerId}"]`);
+                if (activeTab) {
+                  activeTab.style.background = 'rgba(255,255,255,.1)';
+                  activeTab.style.color = '#f8fafc';
+                  activeTab.style.borderBottom = '2px solid rgba(255,255,255,.2)';
+                }
+                
+                // Gewählten Content anzeigen
+                const activeContent = document.querySelector(`.bw-provider-content[data-provider="${providerId}"]`);
+                if (activeContent) {
+                  activeContent.style.display = 'flex';
+                }
+              }
+              
+              // Provider Tab Click Handler
+              d.addEventListener('click', (e) => {
+                const tab = e.target.closest('.bw-provider-tab');
+                if (tab) {
+                  const providerId = tab.getAttribute('data-provider');
+                  if (providerId) {
+                    switchProviderTab(providerId);
+                    localStorage.setItem('bw_active_provider', providerId);
+                  }
+                }
+              });
+              
               function onSort(){
                 const mode = document.getElementById('bwSort').value;
-                const list = document.getElementById('bwSeriesList');
+                const activeProvider = localStorage.getItem('bw_active_provider') || 's.to';
+                const list = document.querySelector(`.bw-provider-content[data-provider="${activeProvider}"]`);
+                if (!list) return;
+                
                 const items = Array.from(list.children);
                 items.sort((a,b)=>{
                   if (mode==='name') return a.dataset.series.localeCompare(b.dataset.series);
@@ -2204,7 +2486,10 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               }
               function onFilter(){
                 const q = (document.getElementById('bwSearch').value||'').toLowerCase();
-                const list = document.getElementById('bwSeriesList');
+                const activeProvider = localStorage.getItem('bw_active_provider') || 's.to';
+                const list = document.querySelector(`.bw-provider-content[data-provider="${activeProvider}"]`);
+                if (!list) return;
+                
                 Array.from(list.children).forEach(el=>{
                   const show = el.dataset.series.toLowerCase().includes(q);
                   el.style.display = show ? '' : 'none';
@@ -2325,8 +2610,13 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     if (body) { body.style.pointerEvents='none'; body.style.opacity='.6'; }
 
                     const s = item.getAttribute('data-series') || '';
-                    try { localStorage.setItem('bw_series', s); } catch(_) {}
+                    const provider = item.getAttribute('data-provider') || 's.to';
+                    try { 
+                        localStorage.setItem('bw_series', s); 
+                        localStorage.setItem('bw_series_provider', provider);
+                    } catch(_) {}
                     document.cookie = 'bw_series=' + encodeURIComponent(s) + '; path=/';
+                    document.cookie = 'bw_series_provider=' + encodeURIComponent(provider) + '; path=/';
 
                     setTimeout(()=>{ try{
                     if (localStorage.getItem('bw_nav_inflight') === '1') {
@@ -2589,7 +2879,7 @@ def main() -> None:
 
                             # Live auf aktuell laufende Serie anwenden
                             try:
-                                cur_ser, cur_se, cur_ep = parse_episode_info(
+                                cur_ser, cur_se, cur_ep, cur_provider = parse_episode_info(
                                     driver.current_url or ""
                                 )
                                 if cur_ser == ser and ensure_video_context(driver):
@@ -2645,6 +2935,7 @@ def main() -> None:
 
                 # Manual selection via cookie or localStorage
                 sel = get_cookie(driver, "bw_series")
+                series_provider = get_cookie(driver, "bw_series_provider")
 
                 # Fallback: LS lesen, falls Cookie nicht ankam
                 if not sel:
@@ -2654,6 +2945,14 @@ def main() -> None:
                         )
                     except Exception:
                         sel = None
+                
+                if not series_provider:
+                    try:
+                        series_provider = driver.execute_script(
+                            "try { return localStorage.getItem('bw_series_provider'); } catch(e) { return null; }"
+                        )
+                    except Exception:
+                        series_provider = None
 
                 if sel:
                     try:
@@ -2665,9 +2964,13 @@ def main() -> None:
 
                     # Aufräumen (beides)
                     delete_cookie(driver, "bw_series")
+                    delete_cookie(driver, "bw_series_provider")
                     try:
                         driver.execute_script(
                             "try { localStorage.removeItem('bw_series'); } catch(e) {}"
+                        )
+                        driver.execute_script(
+                            "try { localStorage.removeItem('bw_series_provider'); } catch(e) {}"
                         )
                     except Exception:
                         pass
@@ -2681,16 +2984,42 @@ def main() -> None:
                         # Falls nicht im Fortschritt (sollte selten sein)
                         season, episode, position = 1, 1, 0
 
-                    if safe_navigate(
-                        driver,
-                        f"{START_URL}serie/stream/{sel}/staffel-{season}/episode-{episode}",
-                    ):
-                        play_episodes_loop(driver, sel, season, episode, position)
+                    # Verwende den Provider der Serie oder den ausgewählten Provider
+                    if series_provider and series_provider in STREAMING_PROVIDERS:
+                        selected_provider = series_provider
+                    else:
+                        try:
+                            selected_provider = driver.execute_script(
+                                "try { return localStorage.getItem('bw_website_switch') || 's.to'; } catch(e) { return 's.to'; }"
+                            )
+                        except Exception:
+                            selected_provider = "s.to"
+                    
+                    # Verwende den ausgewählten Provider für die Navigation
+                    provider_info = STREAMING_PROVIDERS.get(selected_provider, STREAMING_PROVIDERS["s.to"])
+                    target_url = provider_info["episode_url_template"].format(
+                        series=sel, season=season, episode=episode
+                    )
+                    if safe_navigate(driver, target_url):
+                        play_episodes_loop(driver, sel, season, episode, position, selected_provider)
                     continue
 
                 # Auto detect if user navigated into an episode
-                ser, se, ep = parse_episode_info(driver.current_url or "")
+                ser, se, ep, detected_provider = parse_episode_info(driver.current_url or "")
                 if ser and se and ep:
+                    # Verwende den erkannten Provider oder den ausgewählten Provider
+                    try:
+                        selected_provider = driver.execute_script(
+                            "try { return localStorage.getItem('bw_website_switch') || 's.to'; } catch(e) { return 's.to'; }"
+                        )
+                        # Wenn der erkannte Provider mit dem ausgewählten übereinstimmt oder kein Provider erkannt wurde
+                        if detected_provider == selected_provider or not detected_provider:
+                            provider = selected_provider
+                        else:
+                            provider = detected_provider
+                    except Exception:
+                        provider = detected_provider or "s.to"
+                    
                     sdata = load_progress().get(ser, {})
                     if (
                         int(sdata.get("season", -1)) == se
@@ -2699,7 +3028,7 @@ def main() -> None:
                         pos = int(sdata.get("position", 0))
                     else:
                         pos = 0
-                    play_episodes_loop(driver, ser, se, ep, pos)
+                    play_episodes_loop(driver, ser, se, ep, pos, provider)
                     continue
 
                 time.sleep(0.8)
