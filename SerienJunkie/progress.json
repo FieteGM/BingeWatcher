@@ -3,36 +3,49 @@
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "s.to"
   },
   "naruto": {
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "s.to"
   },
   "one-punch-man": {
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "aniworld.to"
   },
   "jujutsu-kaisen": {
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "aniworld.to"
   },
   "attack-on-titan": {
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "aniworld.to"
   },
   "dan-da-dan": {
     "season": 1,
     "episode": 1,
     "position": 0,
-    "timestamp": 0
+    "timestamp": 0,
+    "provider": "aniworld.to"
+  },
+  "kaiju-no-8": {
+    "season": 2,
+    "episode": 6,
+    "position": 86,
+    "timestamp": 1756318744.3370445,
+    "provider": "aniworld.to"
   }
 }
