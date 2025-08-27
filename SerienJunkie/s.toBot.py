@@ -2224,7 +2224,7 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
                                                style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
                                                placeholder="0" title="Skip to end at this time (seconds)"/>
                                     </div>
-                                    <div style="width:60px;height:36px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;">
+                                    <div style="width:60px;height:36px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:10px;margin-top:auto">
                                         <span style="font-size:10px;color:#fca5a5;">End</span>
                                     </div>
                                 </div>
@@ -2758,9 +2758,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   if (existing) { existing.remove(); return; }
                   const p = document.createElement('div');
                   Object.assign(p, { id:'bwSettingsPanel' });
-                  Object.assign(p.style, { position:'fixed', right:'16px', top:'64px', width:'340px', background:'rgba(2,6,23,.94)', border:'1px solid rgba(255,255,255,.12)', borderRadius:'12px', color:'#e2e8f0', padding:'16px', zIndex:2147483647 });
+                  Object.assign(p.style, { position:'fixed', right:'16px', top:'64px', width:'340px', background:'rgba(2,6,23,.94)', border:'1px solid rgba(255,255,255,.12)', borderRadius:'12px', color:'#e2e8f0', padding:'16px', zIndex:2147483647, cursor:'move', userSelect:'none' });
                   p.innerHTML = `
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;cursor:move;" id="bwSettingsDragHandle">
                       <div style="font-weight:600">Settings</div>
                       <button id="bwCloseSettings" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">X</button>
                     </div>
@@ -2797,6 +2797,88 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     </div>
                   `;
                   document.body.appendChild(p);
+                  
+                  // Drag and drop functionality
+                  let isDragging = false;
+                  let dragStartX = 0;
+                  let dragStartY = 0;
+                  let initialLeft = 0;
+                  let initialTop = 0;
+                  
+                  const dragHandle = document.getElementById('bwSettingsDragHandle');
+                  const panel = document.getElementById('bwSettingsPanel');
+                  
+                  // Load saved position or use default
+                  let savedPosition = null;
+                  try {
+                    const saved = localStorage.getItem('bw_settings_panel_position');
+                    if (saved) {
+                      savedPosition = JSON.parse(saved);
+                    }
+                  } catch(_) {}
+                  
+                                        // Calculate initial position
+                      if (savedPosition && savedPosition.left !== undefined && savedPosition.top !== undefined) {
+                    // Use saved position, but ensure it's within viewport bounds
+                    initialLeft = Math.max(0, Math.min(window.innerWidth - 340, savedPosition.left));
+                    initialTop = Math.max(0, Math.min(window.innerHeight - 400, savedPosition.top));
+                  } else {
+                    // Default position (top-right)
+                    initialLeft = window.innerWidth - 356; // 340px width + 16px margin
+                    initialTop = 64;
+                  }
+                  
+                  // Set initial position
+                  panel.style.right = 'auto';
+                  panel.style.left = initialLeft + 'px';
+                  panel.style.top = initialTop + 'px';
+                  
+                  dragHandle.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    dragStartX = e.clientX;
+                    dragStartY = e.clientY;
+                    initialLeft = parseInt(panel.style.left) || 0;
+                    initialTop = parseInt(panel.style.top) || 0;
+                    e.preventDefault();
+                  });
+                  
+                  document.addEventListener('mousemove', (e) => {
+                    if (!isDragging) return;
+                    
+                    const deltaX = e.clientX - dragStartX;
+                    const deltaY = e.clientY - dragStartY;
+                    
+                    const newLeft = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, initialLeft + deltaX));
+                    const newTop = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, initialTop + deltaY));
+                    
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top = newTop + 'px';
+                  });
+                  
+                  document.addEventListener('mouseup', () => {
+                    if (isDragging) {
+                      // Save the current position when dragging stops
+                      try {
+                        const currentLeft = parseInt(panel.style.left) || 0;
+                        const currentTop = parseInt(panel.style.top) || 0;
+                        const position = { left: currentLeft, top: currentTop };
+                        localStorage.setItem('bw_settings_panel_position', JSON.stringify(position));
+                      } catch(_) {}
+                    }
+                    isDragging = false;
+                  });
+                  
+                  // Prevent dragging when interacting with form elements
+                  const formElements = panel.querySelectorAll('input, select, button, label');
+                  formElements.forEach(element => {
+                    element.addEventListener('mousedown', (e) => {
+                      e.stopPropagation();
+                    });
+                    element.addEventListener('click', (e) => {
+                      e.stopPropagation();
+                    });
+                  });
+                  
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
                     const x = id => document.getElementById(id);
@@ -2814,6 +2896,11 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     });
                   } catch(_){}
                   p.addEventListener('click', (ev)=>{
+                    // Prevent dragging when clicking on interactive elements
+                    if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'BUTTON' || ev.target.closest('label')) {
+                      return;
+                    }
+                    
                     if (ev.target && ev.target.id==='bwCloseSettings') { p.remove(); }
                                          if (ev.target && ev.target.id==='bwSaveSettings') {
                                               const next = {
