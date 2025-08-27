@@ -1312,9 +1312,9 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                 last_save = now
 
             # End-Screen-Skip Logik
-            if auto_skip_end and remaining_time <= 3:
+            if auto_skip_end:
                 end_skip_seconds = get_end_skip_seconds(series)
-                if end_skip_seconds > 0:
+                if end_skip_seconds > 0 and remaining_time <= end_skip_seconds:
                     try:
                         driver.execute_script(
                             """
@@ -1331,6 +1331,9 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                         )
                     except Exception:
                         pass
+                    # Wenn wir das Ende überspringen, warten wir kurz und brechen dann ab
+                    time.sleep(0.5)
+                    break
             
             if remaining_time <= 3:
                 break
@@ -2175,31 +2178,90 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             end_skip_val = int(data.get("end_skip", 0))
             safe_name = _html.escape(series_name, quote=True)
 
-            # Dynamische Eingabefelder basierend auf Settings
-            input_fields = []
+            # Beautiful Skip Time Input Fields
+            input_fields_html = ""
             
-            if auto_skip_intro:
-                input_fields.append(f'<input class="bw-intro-start" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:60px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Start" title="Intro start time"/>')
-                input_fields.append(f'<input class="bw-intro-end" data-series="{safe_name}" type="number" min="0" value="{intro_end_val}" style="width:60px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End" title="Intro end time"/>')
-            
-            if auto_skip_end:
-                input_fields.append(f'<input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End"/>')
-            
-            input_fields_html = "".join(input_fields)
+            if auto_skip_intro or auto_skip_end:
+                # Build intro section HTML
+                intro_section_html = ""
+                if auto_skip_intro:
+                    intro_section_html = f'''
+                            <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:6px;">
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <div style="width:12px;height:12px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">&gt;</div>
+                                    <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip</span>
+                                </div>
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Start (s)</label>
+                                        <input class="bw-intro-start" data-series="{safe_name}" type="number" min="0" value="{intro_val}" 
+                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
+                                               placeholder="0" title="Intro start time (seconds)"/>
+                                    </div>
+                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">End (s)</label>
+                                        <input class="bw-intro-end" data-series="{safe_name}" type="number" min="0" value="{intro_end_val}" 
+                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
+                                               placeholder="0" title="Intro end time (seconds)"/>
+                                    </div>
+                                </div>
+                            </div>
+                            '''
+                
+                # Build end section HTML
+                end_section_html = ""
+                if auto_skip_end:
+                    end_section_html = f'''
+                            <div class="bw-end-section" style="display:flex;flex-direction:column;gap:6px;">
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <div style="width:12px;height:12px;background:linear-gradient(135deg,#ef4444,#dc2626);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">[]</div>
+                                    <span style="font-size:11px;color:#cbd5e1;font-weight:500;">End Skip</span>
+                                </div>
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Skip at (s)</label>
+                                        <input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" 
+                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
+                                               placeholder="0" title="Skip to end at this time (seconds)"/>
+                                    </div>
+                                    <div style="width:60px;height:36px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;">
+                                        <span style="font-size:10px;color:#fca5a5;">End</span>
+                                    </div>
+                                </div>
+                            </div>
+                            '''
+                
+                # Combine into final input fields HTML
+                input_fields_html = f'''
+                    <div class="bw-skip-controls" style="margin-top:12px;padding:12px;background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(139,92,246,.08));border:1px solid rgba(59,130,246,.2);border-radius:10px;position:relative;">
+                        <div style="position:absolute;top:-8px;left:12px;background:linear-gradient(135deg,rgba(15,23,42,.95),rgba(30,41,59,.95));padding:2px 8px;border-radius:6px;font-size:10px;color:#93c5fd;font-weight:600;border:1px solid rgba(59,130,246,.3);">Skip Times</div>
+                        
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            {intro_section_html}
+                            {end_section_html}
+                        </div>
+                    </div>
+                '''
 
             series_items.append(f"""
                 <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}" data-provider="{provider_id}"
                      style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
                             border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
-                    <div style="font-weight:600;font-size:14px;color:#f8fafc;margin-bottom:4px;">{safe_name}</div>
-                    <div style="font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:8px;">
-                        <span style="background:{provider_info['color']}20;padding:2px 6px;border-radius:4px;border:1px solid {provider_info['color']}40;">S{season}E{episode}</span>
-                        <span style="opacity:.7;">{position}s</span>
+                    
+                    <!-- Header with title and delete button -->
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <div style="font-weight:600;font-size:14px;color:#f8fafc;margin-bottom:4px;">{safe_name}</div>
+                            <div style="font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:8px;">
+                                <span style="background:{provider_info['color']}20;padding:2px 6px;border-radius:4px;border:1px solid {provider_info['color']}40;">S{season}E{episode}</span>
+                                <span style="opacity:.7;">{position}s</span>
+                            </div>
+                        </div>
+                        <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:8px;border-radius:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;margin-left:8px;transition:all .2s ease;hover:background:rgba(239,68,68,.2);" title="Remove series">X</div>
                     </div>
-                    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-                        {input_fields_html}
-                        <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:6px;border-radius:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;">✕</div>
-                    </div>
+                    
+                    <!-- Skip Time Controls -->
+                    {input_fields_html}
                 </div>
             """)
         
@@ -2406,6 +2468,75 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 border-color: rgba(255,255,255,.25) !important;
                 background: rgba(255,255,255,.12) !important;
                 transform: translateY(-1px);
+              }
+              
+              /* Beautiful Skip Time Input Fields */
+              #bingeSidebar .bw-skip-controls {
+                transition: all .3s ease;
+              }
+              
+              #bingeSidebar .bw-skip-controls:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(59,130,246,.15);
+              }
+              
+              #bingeSidebar .bw-intro-start,
+              #bingeSidebar .bw-intro-end,
+              #bingeSidebar .bw-end {
+                transition: all .2s ease !important;
+              }
+              
+              #bingeSidebar .bw-intro-start:focus,
+              #bingeSidebar .bw-intro-end:focus,
+              #bingeSidebar .bw-end:focus {
+                transform: scale(1.02);
+                box-shadow: 0 0 0 2px rgba(59,130,246,.3);
+                border-color: rgba(59,130,246,.6) !important;
+              }
+              
+              #bingeSidebar .bw-intro-start:hover,
+              #bingeSidebar .bw-intro-end:hover,
+              #bingeSidebar .bw-end:hover {
+                border-color: rgba(59,130,246,.5) !important;
+                background: rgba(59,130,246,.15) !important;
+              }
+              
+              #bingeSidebar .bw-intro-end:focus {
+                box-shadow: 0 0 0 2px rgba(139,92,246,.3);
+                border-color: rgba(139,92,246,.6) !important;
+              }
+              
+              #bingeSidebar .bw-intro-end:hover {
+                border-color: rgba(139,92,246,.5) !important;
+                background: rgba(139,92,246,.15) !important;
+              }
+              
+              #bingeSidebar .bw-end:focus {
+                box-shadow: 0 0 0 2px rgba(239,68,68,.3);
+                border-color: rgba(239,68,68,.6) !important;
+              }
+              
+              #bingeSidebar .bw-end:hover {
+                border-color: rgba(239,68,68,.5) !important;
+                background: rgba(239,68,68,.15) !important;
+              }
+              
+              /* Input field animations */
+              #bingeSidebar .bw-intro-section,
+              #bingeSidebar .bw-end-section {
+                transition: all .2s ease;
+              }
+              
+              #bingeSidebar .bw-intro-section:hover,
+              #bingeSidebar .bw-end-section:hover {
+                transform: translateX(2px);
+              }
+              
+              /* Delete button hover effect */
+              #bingeSidebar .bw-delete:hover {
+                background: rgba(239,68,68,.2) !important;
+                transform: scale(1.1);
+                box-shadow: 0 2px 8px rgba(239,68,68,.3);
               }
               `;
               d.appendChild(style);
@@ -2631,7 +2762,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   p.innerHTML = `
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                       <div style="font-weight:600">Settings</div>
-                      <button id="bwCloseSettings" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">✕</button>
+                      <button id="bwCloseSettings" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">X</button>
                     </div>
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                       <input type="checkbox" id="bwOptAutoFullscreen"/><span>Auto-Fullscreen</span>
