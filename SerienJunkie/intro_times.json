@@ -1,0 +1,207 @@
+{
+  "one-piece": {
+    "name": "One Piece",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 2,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 3,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 4,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 5,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 6,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 7,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 8,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 9,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 10,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      },
+      {
+        "season": 11,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "we are", "yo ho ho", "mugiwara", "straw hat"]
+      }
+    ],
+    "default_skip_start": 85,
+    "default_skip_end": 145
+  },
+  "naruto": {
+    "name": "Naruto",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "naruto", "believe it", "ninja", "hidden leaf"]
+      },
+      {
+        "season": 2,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "naruto", "believe it", "ninja", "hidden leaf"]
+      },
+      {
+        "season": 3,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "naruto", "believe it", "ninja", "hidden leaf"]
+      },
+      {
+        "season": 4,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "naruto", "believe it", "ninja", "hidden leaf"]
+      },
+      {
+        "season": 5,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "naruto", "believe it", "ninja", "hidden leaf"]
+      }
+    ],
+    "default_skip_start": 80,
+    "default_skip_end": 140
+  },
+  "one-punch-man": {
+    "name": "One Punch Man",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "one punch", "hero", "saitama", "bald"]
+      },
+      {
+        "season": 2,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "one punch", "hero", "saitama", "bald"]
+      }
+    ],
+    "default_skip_start": 85,
+    "default_skip_end": 145
+  },
+  "jujutsu-kaisen": {
+    "name": "Jujutsu Kaisen",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "jujutsu", "kaisen", "curse", "sorcerer", "gojo"]
+      },
+      {
+        "season": 2,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "jujutsu", "kaisen", "curse", "sorcerer", "gojo"]
+      }
+    ],
+    "default_skip_start": 85,
+    "default_skip_end": 145
+  },
+  "attack-on-titan": {
+    "name": "Attack on Titan",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "attack", "titan", "shingeki", "eren", "mikasa", "levi"]
+      },
+      {
+        "season": 2,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "attack", "titan", "shingeki", "eren", "mikasa", "levi"]
+      },
+      {
+        "season": 3,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "attack", "titan", "shingeki", "eren", "mikasa", "levi"]
+      },
+      {
+        "season": 4,
+        "start_time": 80,
+        "end_time": 140,
+        "detection_patterns": ["opening", "intro", "attack", "titan", "shingeki", "eren", "mikasa", "levi"]
+      }
+    ],
+    "default_skip_start": 80,
+    "default_skip_end": 140
+  },
+  "dan-da-dan": {
+    "name": "Dandadan",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "dandadan", "supernatural", "alien", "ghost", "momo"]
+      }
+    ],
+    "default_skip_start": 85,
+    "default_skip_end": 145
+  },
+  "kaiju-no-8": {
+    "name": "Kaiju No. 8",
+    "intros": [
+      {
+        "season": 1,
+        "start_time": 85,
+        "end_time": 145,
+        "detection_patterns": ["opening", "intro", "kaiju", "monster", "defense force", "kafka"]
+      }
+    ],
+    "default_skip_start": 85,
+    "default_skip_end": 145
+  }
+}

@@ -1,51 +1,74 @@
 {
   "one-piece": {
-    "season": 1,
+    "season": 18,
     "episode": 1,
-    "position": 0,
-    "timestamp": 0,
-    "provider": "s.to"
+    "position": 3,
+    "timestamp": 1756323611.9629261,
+    "provider": "s.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   },
   "naruto": {
     "season": 1,
     "episode": 1,
     "position": 0,
     "timestamp": 0,
-    "provider": "s.to"
+    "provider": "s.to",
+    "intro_skip_start": 80,
+    "intro_skip_end": 140
   },
   "one-punch-man": {
     "season": 1,
-    "episode": 1,
-    "position": 0,
-    "timestamp": 0,
-    "provider": "aniworld.to"
+    "episode": 2,
+    "position": 88,
+    "timestamp": 1756323483.093002,
+    "provider": "aniworld.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   },
   "jujutsu-kaisen": {
     "season": 1,
     "episode": 1,
     "position": 0,
     "timestamp": 0,
-    "provider": "aniworld.to"
+    "provider": "aniworld.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   },
   "attack-on-titan": {
     "season": 1,
     "episode": 1,
     "position": 0,
     "timestamp": 0,
-    "provider": "aniworld.to"
+    "provider": "aniworld.to",
+    "intro_skip_start": 80,
+    "intro_skip_end": 140
+  },
+  "demon-slayer-kimetsu-no-yaiba": {
+    "season": 1,
+    "episode": 1,
+    "position": 0,
+    "timestamp": 0,
+    "provider": "aniworld.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   },
   "dan-da-dan": {
     "season": 1,
     "episode": 1,
     "position": 0,
     "timestamp": 0,
-    "provider": "aniworld.to"
+    "provider": "aniworld.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   },
   "kaiju-no-8": {
-    "season": 2,
-    "episode": 6,
-    "position": 86,
-    "timestamp": 1756318744.3370445,
-    "provider": "aniworld.to"
+    "season": 1,
+    "episode": 1,
+    "position": 0,
+    "timestamp": 0,
+    "provider": "aniworld.to",
+    "intro_skip_start": 85,
+    "intro_skip_end": 145
   }
 }
