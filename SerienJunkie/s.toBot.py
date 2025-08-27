@@ -147,18 +147,32 @@ def handle_list_item_deletion(name: str) -> bool:
 def get_intro_skip_seconds(series: str) -> int:
     try:
         data = load_progress().get(series, {})
-        val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
+        val = int(data.get("intro_skip_start", INTRO_SKIP_SECONDS))
         return max(0, val)
     except Exception:
         return INTRO_SKIP_SECONDS
 
 
-def set_intro_skip_seconds(series: str, seconds: int) -> bool:
+def get_intro_skip_end_seconds(series: str) -> int:
     try:
-        seconds = max(0, int(seconds))
+        data = load_progress().get(series, {})
+        val = int(data.get("intro_skip_end", INTRO_SKIP_SECONDS + 60))
+        return max(0, val)
+    except Exception:
+        return INTRO_SKIP_SECONDS + 60
+
+
+def set_intro_skip_seconds(series: str, start_seconds: int, end_seconds: int = None) -> bool:
+    try:
+        start_seconds = max(0, int(start_seconds))
+        if end_seconds is None:
+            end_seconds = start_seconds + 60
+        end_seconds = max(0, int(end_seconds))
+        
         db = load_progress()
         entry = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
-        entry["intro_skip"] = seconds
+        entry["intro_skip_start"] = start_seconds
+        entry["intro_skip_end"] = end_seconds
         db[series] = entry
         with open(PROGRESS_DB_FILE, "w", encoding="utf-8") as f:
             json.dump(db, f, indent=2, ensure_ascii=False)
@@ -166,6 +180,97 @@ def set_intro_skip_seconds(series: str, seconds: int) -> bool:
     except Exception as e:
         logging.error(f"Intro time could not be saved: {e}")
         return False
+
+
+def load_intro_times() -> Dict[str, Any]:
+    """Load intro times from intro_times.json"""
+    try:
+        intro_times_file = os.path.join(SCRIPT_DIR, "intro_times.json")
+        if os.path.exists(intro_times_file):
+            with open(intro_times_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        logging.error(f"Could not load intro times: {e}")
+        return {}
+
+
+def get_default_intro_times(series: str, season: int = 1) -> tuple[int, int]:
+    """Get default intro times for a series and season"""
+    try:
+        intro_times = load_intro_times()
+        series_data = intro_times.get(series, {})
+        
+        # Try to find specific season data
+        for intro in series_data.get("intros", []):
+            if intro.get("season") == season:
+                return intro.get("start_time", 90), intro.get("end_time", 150)
+        
+        # Fall back to default times
+        return series_data.get("default_skip_start", 90), series_data.get("default_skip_end", 150)
+    except Exception:
+        return 90, 150
+
+
+def detect_intro_start(driver, series: str, season: int = 1) -> bool:
+    """Detect if an intro is currently playing"""
+    try:
+        intro_times = load_intro_times()
+        series_data = intro_times.get(series, {})
+        
+        # Get current video time
+        current_time = driver.execute_script("return document.querySelector('video')?.currentTime || 0;")
+        
+        # Check if we're in the intro time window
+        for intro in series_data.get("intros", []):
+            if intro.get("season") == season:
+                start_time = intro.get("start_time", 90)
+                end_time = intro.get("end_time", 150)
+                
+                if start_time <= current_time <= end_time:
+                    # Additional detection patterns
+                    detection_patterns = intro.get("detection_patterns", [])
+                    
+                    # Check for intro indicators in the page
+                    page_text = driver.execute_script("return document.body.innerText.toLowerCase();")
+                    
+                    for pattern in detection_patterns:
+                        if pattern.lower() in page_text:
+                            return True
+                    
+                    # If we're in the time window and no specific patterns found, assume it's an intro
+                    return True
+        
+        return False
+    except Exception as e:
+        logging.error(f"Error detecting intro: {e}")
+        return False
+
+
+def smart_skip_intro(driver, series: str, season: int = 1):
+    """Smart intro skipping that only skips when an intro is detected"""
+    try:
+        # Wait for video to be ready
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script(
+                "return document.querySelector('video')?.readyState > 0;"
+            )
+        )
+        
+        # Get intro times
+        intro_start, intro_end = get_default_intro_times(series, season)
+        
+        # Check if we should skip intro
+        if detect_intro_start(driver, series, season):
+            logging.info(f"Intro detected for {series}, skipping to {intro_end} seconds")
+            driver.execute_script(f"document.querySelector('video').currentTime = {intro_end};")
+        else:
+            logging.info(f"No intro detected for {series}, continuing normally")
+            
+    except Exception as e:
+        logging.error(f"Error in smart intro skip: {e}")
+        # Fall back to simple skip
+        skip_intro(driver, get_intro_skip_seconds(series))
 
 
 def get_end_skip_seconds(series: str) -> int:
@@ -844,7 +949,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
         if position and position > 0:
             skip_intro(driver, position)
         elif auto_skip:
-            skip_intro(driver, get_intro_skip_seconds(series))
+            smart_skip_intro(driver, series, current_season)
         position = 0
 
         recovery_tries = 0
@@ -882,16 +987,23 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
         try:
             const_ser = series
             const_secs = get_intro_skip_seconds(const_ser)
+            const_secs_end = get_intro_skip_end_seconds(const_ser)
             driver.execute_script(
                 """
                 const v = document.querySelector('video');
                 const secs = arguments[0];
+                const secsEnd = arguments[1];
                 if (v && isFinite(v.duration) && v.currentTime < secs && secs < (v.duration - 3)) {
-                    v.currentTime = secs;
-                    try { v.play().catch(()=>{}); } catch(_) {}
+                    // Check if we're in an intro time window
+                    const currentTime = v.currentTime;
+                    if (currentTime >= secs && currentTime <= secsEnd) {
+                        v.currentTime = secsEnd;
+                        try { v.play().catch(()=>{}); } catch(_) {}
+                    }
                 }
             """,
                 const_secs,
+                const_secs_end,
             )
         except Exception:
             pass
@@ -2058,7 +2170,8 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             episode = int(data.get("episode", 1))
             position = int(data.get("position", 0))
             ts_val = float(data.get("timestamp", 0))
-            intro_val = int(data.get("intro_skip", INTRO_SKIP_SECONDS))
+            intro_val = int(data.get("intro_skip_start", INTRO_SKIP_SECONDS))
+            intro_end_val = int(data.get("intro_skip_end", INTRO_SKIP_SECONDS + 60))
             end_skip_val = int(data.get("end_skip", 0))
             safe_name = _html.escape(series_name, quote=True)
 
@@ -2066,7 +2179,8 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             input_fields = []
             
             if auto_skip_intro:
-                input_fields.append(f'<input class="bw-intro" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Intro"/>')
+                input_fields.append(f'<input class="bw-intro-start" data-series="{safe_name}" type="number" min="0" value="{intro_val}" style="width:60px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="Start" title="Intro start time"/>')
+                input_fields.append(f'<input class="bw-intro-end" data-series="{safe_name}" type="number" min="0" value="{intro_end_val}" style="width:60px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End" title="Intro end time"/>')
             
             if auto_skip_end:
                 input_fields.append(f'<input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" style="width:80px;padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(2,6,23,.35);color:#e2e8f0;" placeholder="End"/>')
@@ -2319,14 +2433,20 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 const currentUrl = window.location.href;
                 const detectedProvider = detectProviderFromUrl(currentUrl);
                 
-                if (detectedProvider) {
-                  // Update website switch highlighting
-                  updateProviderSwitch(detectedProvider);
-                  
-                  // Switch to correct provider tab (only if elements exist)
-                  if (typeof switchProviderTab === 'function') {
-                    switchProviderTab(detectedProvider);
-                  }
+                // Determine which provider to highlight
+                let providerToHighlight = detectedProvider;
+                
+                // If no provider detected from URL, use the last active provider from localStorage
+                if (!providerToHighlight) {
+                  providerToHighlight = localStorage.getItem('bw_active_provider') || 's.to';
+                }
+                
+                // Update website switch highlighting
+                updateProviderSwitch(providerToHighlight);
+                
+                // Switch to correct provider tab (only if elements exist)
+                if (typeof switchProviderTab === 'function') {
+                  switchProviderTab(providerToHighlight);
                 }
               }
               
@@ -2598,7 +2718,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                                  const item = c('.bw-series-item');
                  if (item) {
                      // Check if click originated from input field or delete button - don't trigger navigation
-                     const clickedInput = e.target.closest && e.target.closest('input.bw-intro');
+                     const clickedInput = e.target.closest && (e.target.closest('input.bw-intro-start') || e.target.closest('input.bw-intro-end'));
                      const clickedEndInput = e.target.closest && e.target.closest('input.bw-end');
                      const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
                      if (clickedInput || clickedEndInput || clickedDelete) return;
@@ -2631,14 +2751,25 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                              // Debounce für Intro-Input und End-Input
                if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
                d.addEventListener('input', (e)=>{
-                 const inp = e.target.closest && e.target.closest('input.bw-intro');
+                 const inp = e.target.closest && e.target.closest('input.bw-intro-start');
                  if (inp) {
                    const series = inp.dataset.series; if (!series) return;
-                   const key = '__deb_intro_' + series;
+                   const key = '__deb_intro_start_' + series;
                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
                    window.__bwDebouncers[key] = setTimeout(()=>{
                      const seconds = parseInt(inp.value||'0',10)||0;
-                     localStorage.setItem('bw_intro_update', JSON.stringify({series, seconds}));
+                     localStorage.setItem('bw_intro_start_update', JSON.stringify({series, seconds}));
+                   }, 600);
+                 }
+                 
+                 const inpEnd = e.target.closest && e.target.closest('input.bw-intro-end');
+                 if (inpEnd) {
+                   const series = inpEnd.dataset.series; if (!series) return;
+                   const key = '__deb_intro_end_' + series;
+                   if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                   window.__bwDebouncers[key] = setTimeout(()=>{
+                     const seconds = parseInt(inpEnd.value||'0',10)||0;
+                     localStorage.setItem('bw_intro_end_update', JSON.stringify({series, seconds}));
                    }, 600);
                  }
                  
@@ -2848,12 +2979,12 @@ def main() -> None:
                 except Exception:
                     pass
 
-                # Handle intro updates (from sidebar input) – normalisieren + live anwenden
+                # Handle intro start updates (from sidebar input) – normalisieren + live anwenden
                 try:
                     upd = driver.execute_script(
                         """
-                        let r = localStorage.getItem('bw_intro_update');
-                        if (r) localStorage.removeItem('bw_intro_update');
+                        let r = localStorage.getItem('bw_intro_start_update');
+                        if (r) localStorage.removeItem('bw_intro_start_update');
                         return r;
                     """
                     )
@@ -2868,7 +2999,9 @@ def main() -> None:
                             secs = 0
 
                         if ser:
-                            set_intro_skip_seconds(ser, secs)
+                            # Get current end time to preserve it
+                            current_end = get_intro_skip_end_seconds(ser)
+                            set_intro_skip_seconds(ser, secs, current_end)
 
                             # UI sofort aktualisieren
                             html = build_items_html(load_progress(), get_settings(driver))
@@ -2876,29 +3009,39 @@ def main() -> None:
                                 "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
                                 html,
                             )
+                except Exception:
+                    pass
 
-                            # Live auf aktuell laufende Serie anwenden
-                            try:
-                                cur_ser, cur_se, cur_ep, cur_provider = parse_episode_info(
-                                    driver.current_url or ""
-                                )
-                                if cur_ser == ser and ensure_video_context(driver):
-                                    driver.execute_script(
-                                        """
-                                        const v = document.querySelector('video');
-                                        const secs = arguments[0];
-                                        if (v && isFinite(v.duration)) {
-                                            const nearEnd = v.duration - v.currentTime <= 5;
-                                            if (!nearEnd && (v.currentTime + 1) < secs && secs < (v.duration - 3)) {
-                                                v.currentTime = secs;
-                                                try { v.play().catch(()=>{}); } catch(_) {}
-                                            }
-                                        }
-                                    """,
-                                        secs,
-                                    )
-                            except Exception:
-                                pass
+                # Handle intro end updates (from sidebar input) – normalisieren + live anwenden
+                try:
+                    upd = driver.execute_script(
+                        """
+                        let r = localStorage.getItem('bw_intro_end_update');
+                        if (r) localStorage.removeItem('bw_intro_end_update');
+                        return r;
+                    """
+                    )
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser:
+                            # Get current start time to preserve it
+                            current_start = get_intro_skip_seconds(ser)
+                            set_intro_skip_seconds(ser, current_start, secs)
+
+                            # UI sofort aktualisieren
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
                 except Exception:
                     pass
 
