@@ -1,12 +1,13 @@
 {
   "one-piece": {
-    "season": 18,
+    "season": 1,
     "episode": 1,
-    "position": 3,
-    "timestamp": 1756323611.9629261,
+    "position": 0,
+    "timestamp": 0,
     "provider": "s.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145
+    "intro_skip_start": 80,
+    "intro_skip_end": 140,
+    "end_skip": 10
   },
   "naruto": {
     "season": 1,
