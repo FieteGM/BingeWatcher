@@ -43,11 +43,9 @@ if not "!missing_modules!"=="" (
 )
 
 REM === Check Tor setting from settings.json ===
-set USE_TOR=false
-for /f "tokens=2 delims=:," %%a in ('findstr /C:"useTorProxy" settings.json') do (
-    set TOR_VALUE=%%a
-    set TOR_VALUE=!TOR_VALUE: =!
-    if "!TOR_VALUE!"=="true" set USE_TOR=true
+set "USE_TOR=false"
+for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "try { $json = Get-Content -Raw 'settings.json' | ConvertFrom-Json; if ($null -ne $json.useTorProxy -and $json.useTorProxy -eq $true) { 'true' } else { 'false' } } catch { 'false' }"`) do (
+    set "USE_TOR=%%a"
 )
 
 if "%USE_TOR%"=="true" (
