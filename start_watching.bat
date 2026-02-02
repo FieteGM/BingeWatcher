@@ -5,6 +5,43 @@ REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
 echo Starting Binge Watching...
 
+REM === Required Python modules ===
+set modules=selenium configparser
+
+REM === Check Python installation ===
+python --version >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [X] Python is not installed or not added to PATH.
+    pause
+    exit /b 1
+)
+
+REM === Check and install missing modules ===
+set "missing_modules="
+
+for %%m in (%modules%) do (
+    python -c "import %%m" >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo [-] Missing Python module: %%m
+        set "missing_modules=!missing_modules! %%m"
+    ) else (
+        echo [+] Python module '%%m' already installed.
+    )
+)
+
+if not "!missing_modules!"=="" (
+    echo Installing missing modules:!missing_modules!
+    python -m pip install --upgrade pip >nul 2>&1
+    python -m pip install !missing_modules!
+    if !ERRORLEVEL! NEQ 0 (
+        echo [X] Failed to install modules. Please install manually.
+        pause
+        exit /b 1
+    )
+) else (
+    echo [=] All dependencies satisfied.
+)
+
 REM === Check Tor setting from settings.json ===
 set USE_TOR=false
 for /f "tokens=2 delims=:," %%a in ('findstr /C:"useTorProxy" settings.json') do (
@@ -56,43 +93,6 @@ if "%USE_TOR%"=="true" (
     echo [+] Tor started successfully.
 ) else (
     echo [i] Tor DNS disabled in settings.json - skipping Tor startup.
-)
-
-REM === Required Python modules ===
-set modules=selenium configparser
-
-REM === Check Python installation ===
-python --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [X] Python is not installed or not added to PATH.
-    pause
-    exit /b 1
-)
-
-REM === Check and install missing modules ===
-set "missing_modules="
-
-for %%m in (%modules%) do (
-    python -c "import %%m" >nul 2>&1
-    if !ERRORLEVEL! NEQ 0 (
-        echo [-] Missing Python module: %%m
-        set "missing_modules=!missing_modules! %%m"
-    ) else (
-        echo [+] Python module '%%m' already installed.
-    )
-)
-
-if not "!missing_modules!"=="" (
-    echo Installing missing modules:!missing_modules!
-    python -m pip install --upgrade pip >nul 2>&1
-    python -m pip install !missing_modules!
-    if !ERRORLEVEL! NEQ 0 (
-        echo [X] Failed to install modules. Please install manually.
-        pause
-        exit /b 1
-    )
-) else (
-    echo [=] All dependencies satisfied.
 )
 
 REM === Start Python Script ===

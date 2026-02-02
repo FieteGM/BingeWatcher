@@ -2325,9 +2325,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   <span class="chev">❮</span>
                   </button>
 
-                  <div style="margin-top:12px;display:flex;gap:8px;">
+                  <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
                   <input id="bwSearch" placeholder="Search..." style="flex:1;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
-                  <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;">
+                  <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;min-width:120px;max-width:120px;flex:0 0 120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                       <option value="time">Last watched</option>
                       <option value="name">Name</option>
                   </select>
@@ -2391,14 +2391,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               /* Handle */
               #bingeSidebar .bw-handle{
                 position:absolute; top:85px; right:-18px; width:32px; height:32px; border-radius:999px;
-                border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
+                border:1px solid rgba(59,130,246,.6); background:linear-gradient(135deg,rgba(30,41,59,.95),rgba(2,6,23,.95));
                 backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
-                box-shadow:0 6px 20px rgba(0,0,0,.4);
-                transition: transform .2s ease, background .2s ease, border-color .2s ease;
+                box-shadow:0 6px 20px rgba(0,0,0,.4), 0 0 0 2px rgba(59,130,246,.18);
+                transition: transform .2s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease;
               }
               #bingeSidebar .bw-handle::after{ content:""; position:absolute; inset:-8px; } /* größere Klickfläche */
-              #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:rgba(15,23,42,.9); border-color:rgba(148,163,184,.5); }
-              #bingeSidebar .chev{ font-size:16px; line-height:1; transition: transform .2s ease; }
+              #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:linear-gradient(135deg,rgba(30,41,59,1),rgba(15,23,42,1)); border-color:rgba(59,130,246,.85); box-shadow:0 8px 22px rgba(0,0,0,.45), 0 0 0 2px rgba(59,130,246,.3); }
+              #bingeSidebar .chev{ font-size:16px; line-height:1; color:#e2e8f0; text-shadow:0 0 8px rgba(59,130,246,.45); transition: transform .2s ease, color .2s ease; }
               #bingeSidebar[data-collapsed="1"] .bw-handle .chev{ transform: rotate(180deg); }
   
               /* Body */
@@ -2436,6 +2436,13 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 transition: all .2s ease;
               }
               
+              #bingeSidebar .bw-provider-tab[data-active="1"] {
+                background: rgba(255,255,255,.08) !important;
+                color: #f8fafc !important;
+                border-bottom: 2px solid rgba(148,163,184,.55) !important;
+                box-shadow: inset 0 -2px 0 rgba(148,163,184,.2);
+              }
+              
               #bingeSidebar .bw-provider-tab:hover {
                 background: rgba(255,255,255,.08) !important;
                 color: #f8fafc !important;
@@ -2457,10 +2464,19 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               }
               
               #bingeSidebar .bw-provider-switch.active {
-                border-color: rgba(255,255,255,.3) !important;
-                background: rgba(255,255,255,.15) !important;
+                border-color: rgba(59,130,246,.7) !important;
+                background: linear-gradient(135deg, rgba(59,130,246,.25), rgba(139,92,246,.25)) !important;
                 color: #f8fafc !important;
-                box-shadow: 0 0 0 1px rgba(255,255,255,.1);
+                box-shadow: 0 0 0 1px rgba(59,130,246,.25), 0 6px 16px rgba(15,23,42,.35);
+                position: relative;
+              }
+              #bingeSidebar .bw-provider-switch.active::after {
+                content: '';
+                position: absolute;
+                inset: -2px;
+                border-radius: 8px;
+                border: 1px solid rgba(59,130,246,.35);
+                pointer-events: none;
               }
               
               #bingeSidebar .bw-provider-switch:hover {
@@ -2684,6 +2700,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   tab.style.background = 'rgba(255,255,255,.05)';
                   tab.style.color = '#94a3b8';
                   tab.style.borderBottom = 'none';
+                  tab.removeAttribute('data-active');
                 });
                 
                 // Alle Contents ausblenden
@@ -2697,6 +2714,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   activeTab.style.background = 'rgba(255,255,255,.1)';
                   activeTab.style.color = '#f8fafc';
                   activeTab.style.borderBottom = '2px solid rgba(255,255,255,.2)';
+                  activeTab.setAttribute('data-active', '1');
                 }
                 
                 // Gewählten Content anzeigen
