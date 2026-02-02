@@ -27,6 +27,20 @@ tracking, intro/end skipping, and a modern sidebar UI for quick navigation.
 - Firefox
 - GeckoDriver (included as `geckodriver.exe` in this repo)
 
+
+## Quick-Start (Windows)
+
+1. Run `start_watching.bat` from the repo root.
+2. The script will:
+   - check your Python install,
+   - install missing Python modules (`selenium`, `configparser`),
+   - optionally start Tor if `settings.json` has `useTorProxy: true`,
+   - launch `s.toBot.py`.
+
+> Note: This helper does **not** run `pip install -r requirements.txt`.
+> If you want the full dependency set or you are on macOS/Linux, use the
+> installation steps below.
+
 ## Installation
 
 ```bash
