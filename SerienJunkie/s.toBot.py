@@ -993,13 +993,12 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                 const v = document.querySelector('video');
                 const secs = arguments[0];
                 const secsEnd = arguments[1];
-                if (v && isFinite(v.duration) && v.currentTime < secs && secs < (v.duration - 3)) {
-                    // Check if we're in an intro time window
-                    const currentTime = v.currentTime;
-                    if (currentTime >= secs && currentTime <= secsEnd) {
-                        v.currentTime = secsEnd;
-                        try { v.play().catch(()=>{}); } catch(_) {}
-                    }
+                if (!v || !isFinite(v.duration)) return;
+                if (secsEnd <= secs || secsEnd >= (v.duration - 1)) return;
+                const currentTime = v.currentTime;
+                if (currentTime >= secs && currentTime <= secsEnd) {
+                    v.currentTime = secsEnd;
+                    try { v.play().catch(()=>{}); } catch(_) {}
                 }
             """,
                 const_secs,
