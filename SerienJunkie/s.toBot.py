@@ -2034,63 +2034,66 @@ def enable_fullscreen(driver: webdriver.Firefox) -> bool:
             pass
 
         # 8.5. Player-spezifische APIs für s.to
-        try:
-            driver.execute_script(
-                """
-                // JWPlayer API
-                if (window.jwplayer && window.jwplayer().getContainer) {
-                    try {
-                        const player = window.jwplayer();
-                        if (player && typeof player.setFullscreen === 'function') {
-                            player.setFullscreen(true);
-                            return;
-                        }
-                    } catch (e) {}
-                }
-                
-                // Video.js API
-                if (window.videojs) {
-                    try {
-                        const players = window.videojs.getPlayers();
-                        for (const id in players) {
-                            const player = players[id];
-                            if (player && typeof player.requestFullscreen === 'function') {
-                                player.requestFullscreen();
+        if is_document_focused(driver):
+            try:
+                driver.execute_script(
+                    """
+                    // JWPlayer API
+                    if (window.jwplayer && window.jwplayer().getContainer) {
+                        try {
+                            const player = window.jwplayer();
+                            if (player && typeof player.setFullscreen === 'function') {
+                                player.setFullscreen(true);
                                 return;
                             }
-                        }
-                    } catch (e) {}
-                }
-                
-                // Plyr API
-                if (window.Plyr) {
-                    try {
-                        const players = document.querySelectorAll('[data-plyr]');
-                        players.forEach(el => {
-                            if (el.plyr && typeof el.plyr.fullscreen.enter === 'function') {
-                                el.plyr.fullscreen.enter();
+                        } catch (e) {}
+                    }
+                    
+                    // Video.js API
+                    if (window.videojs) {
+                        try {
+                            const players = window.videojs.getPlayers();
+                            for (const id in players) {
+                                const player = players[id];
+                                if (player && typeof player.requestFullscreen === 'function') {
+                                    player.requestFullscreen();
+                                    return;
+                                }
                             }
-                        });
-                    } catch (e) {}
-                }
-                
-                // Shaka Player API
-                if (window.shaka && window.shaka.Player) {
-                    try {
-                        const video = document.querySelector('video');
-                        if (video && video.shakaPlayer) {
-                            video.shakaPlayer.getControls().getFullscreenButton().click();
-                        }
-                    } catch (e) {}
-                }
-            """
-            )
-            time.sleep(0.2)
-            if _is_fullscreen(driver):
-                log_fullscreen_method("player_api")
-                return True
-        except Exception:
-            pass
+                        } catch (e) {}
+                    }
+                    
+                    // Plyr API
+                    if (window.Plyr) {
+                        try {
+                            const players = document.querySelectorAll('[data-plyr]');
+                            players.forEach(el => {
+                                if (el.plyr && typeof el.plyr.fullscreen.enter === 'function') {
+                                    el.plyr.fullscreen.enter();
+                                }
+                            });
+                        } catch (e) {}
+                    }
+                    
+                    // Shaka Player API
+                    if (window.shaka && window.shaka.Player) {
+                        try {
+                            const video = document.querySelector('video');
+                            if (video && video.shakaPlayer) {
+                                video.shakaPlayer.getControls().getFullscreenButton().click();
+                            }
+                        } catch (e) {}
+                    }
+                """
+                )
+                time.sleep(0.2)
+                if _is_fullscreen(driver):
+                    log_fullscreen_method("player_api")
+                    return True
+            except Exception:
+                pass
+        else:
+            log_fullscreen_method("player_api_skipped_unfocused")
 
         # 9. Browser-Fenster-Vollbild als Fallback
         try:
