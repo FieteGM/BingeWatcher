@@ -2803,7 +2803,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 ` : '';
 
                 panel.innerHTML = `
-                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                  <div id="bwSeriesSkipDragHandle" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;cursor:move;">
                     <div style="font-weight:600">Skip Times · ${seriesName}</div>
                     <button id="bwCloseSeriesSkip" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">X</button>
                   </div>
@@ -2811,18 +2811,44 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     ${introSectionHtml}
                     ${endSectionHtml}
                   </div>
-                  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
-                    <button id="bwCloseSeriesSkipFooter" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(148,163,184,.3);background:rgba(148,163,184,.12);color:#cbd5e1;cursor:pointer;">Close</button>
-                  </div>
                 `;
 
                 document.body.appendChild(panel);
 
                 const closePanel = () => panel.remove();
                 const closeButton = document.getElementById('bwCloseSeriesSkip');
-                const closeFooter = document.getElementById('bwCloseSeriesSkipFooter');
                 if (closeButton) closeButton.addEventListener('click', closePanel);
-                if (closeFooter) closeFooter.addEventListener('click', closePanel);
+                const skipDragHandle = document.getElementById('bwSeriesSkipDragHandle');
+                if (skipDragHandle) {
+                  let skipIsDragging = false;
+                  let skipDragStartX = 0;
+                  let skipDragStartY = 0;
+                  let skipInitialLeft = 0;
+                  let skipInitialTop = 0;
+
+                  skipDragHandle.addEventListener('mousedown', (ev) => {
+                    skipIsDragging = true;
+                    skipDragStartX = ev.clientX;
+                    skipDragStartY = ev.clientY;
+                    skipInitialLeft = parseInt(panel.style.left || '0', 10) || 0;
+                    skipInitialTop = parseInt(panel.style.top || '0', 10) || 0;
+                    ev.preventDefault();
+                  });
+
+                  document.addEventListener('mousemove', (ev) => {
+                    if (!skipIsDragging) return;
+                    const deltaX = ev.clientX - skipDragStartX;
+                    const deltaY = ev.clientY - skipDragStartY;
+                    const newLeft = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, skipInitialLeft + deltaX));
+                    const newTop = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, skipInitialTop + deltaY));
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top = newTop + 'px';
+                  });
+
+                  document.addEventListener('mouseup', () => {
+                    skipIsDragging = false;
+                  });
+                }
 
                 if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
                 panel.addEventListener('input', (ev) => {
