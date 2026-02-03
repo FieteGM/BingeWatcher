@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import unquote
 
 from selenium import webdriver
@@ -309,6 +309,8 @@ def start_browser() -> webdriver.Firefox:
     try:
         profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
         os.makedirs(profile_path, exist_ok=True)
+        extensions_dir = os.path.join(SCRIPT_DIR, "extensions")
+        profile_extensions_dir = os.path.join(profile_path, "extensions")
 
         options = webdriver.FirefoxOptions()
         options.set_preference(
@@ -337,6 +339,25 @@ def start_browser() -> webdriver.Firefox:
 
         options.set_preference("profile", profile_path)
         options.profile = profile_path
+        extension_paths: List[str] = []
+        extension_candidates: Set[str] = set()
+        for candidate_dir in (extensions_dir, profile_extensions_dir):
+            if not os.path.isdir(candidate_dir):
+                continue
+            for filename in os.listdir(candidate_dir):
+                if not filename.lower().endswith(".xpi"):
+                    continue
+                extension_candidates.add(os.path.join(candidate_dir, filename))
+
+        for extension_path in sorted(extension_candidates):
+            if not os.path.isfile(extension_path):
+                continue
+            extension_paths.append(extension_path)
+            try:
+                options.add_extension(extension_path)
+                logging.info(f"Loaded extension: {os.path.basename(extension_path)}")
+            except Exception as exc:
+                logging.error(f"Extension load failed: {extension_path} ({exc})")
 
         if USE_TOR_PROXY:
             options.set_preference("network.proxy.type", 1)
