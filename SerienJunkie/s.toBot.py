@@ -2913,12 +2913,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     });
                   } catch(_){}
                   p.addEventListener('click', (ev)=>{
+                    if (ev.target && ev.target.id === 'bwCloseSettings') {
+                      p.remove();
+                      return;
+                    }
                     // Prevent dragging when clicking on interactive elements
                     if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'BUTTON' || ev.target.closest('label')) {
                       return;
                     }
-                    
-                    if (ev.target && ev.target.id==='bwCloseSettings') { p.remove(); }
                                          if (ev.target && ev.target.id==='bwSaveSettings') {
                                               const next = {
                           autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
