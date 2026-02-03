@@ -309,7 +309,6 @@ def start_browser() -> webdriver.Firefox:
     try:
         profile_path = os.path.join(SCRIPT_DIR, "user.BingeWatcher")
         os.makedirs(profile_path, exist_ok=True)
-
         options = webdriver.FirefoxOptions()
         options.set_preference(
             "dom.popup_allowed_events",
@@ -337,7 +336,6 @@ def start_browser() -> webdriver.Firefox:
 
         options.set_preference("profile", profile_path)
         options.profile = profile_path
-
         if USE_TOR_PROXY:
             options.set_preference("network.proxy.type", 1)
             options.set_preference("network.proxy.socks", "127.0.0.1")
@@ -2177,73 +2175,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             end_skip_val = int(data.get("end_skip", 0))
             safe_name = _html.escape(series_name, quote=True)
 
-            # Beautiful Skip Time Input Fields
-            input_fields_html = ""
-            
-            if auto_skip_intro or auto_skip_end:
-                # Build intro section HTML
-                intro_section_html = ""
-                if auto_skip_intro:
-                    intro_section_html = f'''
-                            <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:6px;">
-                                <div style="display:flex;align-items:center;gap:6px;">
-                                    <div style="width:12px;height:12px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">&gt;</div>
-                                    <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip</span>
-                                </div>
-                                <div style="display:flex;gap:6px;align-items:center;">
-                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
-                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Start (s)</label>
-                                        <input class="bw-intro-start" data-series="{safe_name}" type="number" min="0" value="{intro_val}" 
-                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
-                                               placeholder="0" title="Intro start time (seconds)"/>
-                                    </div>
-                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
-                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">End (s)</label>
-                                        <input class="bw-intro-end" data-series="{safe_name}" type="number" min="0" value="{intro_end_val}" 
-                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
-                                               placeholder="0" title="Intro end time (seconds)"/>
-                                    </div>
-                                </div>
-                            </div>
-                            '''
-                
-                # Build end section HTML
-                end_section_html = ""
-                if auto_skip_end:
-                    end_section_html = f'''
-                            <div class="bw-end-section" style="display:flex;flex-direction:column;gap:6px;">
-                                <div style="display:flex;align-items:center;gap:6px;">
-                                    <div style="width:12px;height:12px;background:linear-gradient(135deg,#ef4444,#dc2626);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">[]</div>
-                                    <span style="font-size:11px;color:#cbd5e1;font-weight:500;">End Skip</span>
-                                </div>
-                                <div style="display:flex;gap:6px;align-items:center;">
-                                    <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
-                                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Skip at (s)</label>
-                                        <input class="bw-end" data-series="{safe_name}" type="number" min="0" value="{end_skip_val}" 
-                                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;" 
-                                               placeholder="0" title="Skip to end at this time (seconds)"/>
-                                    </div>
-                                    <div style="width:60px;height:36px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:10px;margin-top:auto">
-                                        <span style="font-size:10px;color:#fca5a5;">End</span>
-                                    </div>
-                                </div>
-                            </div>
-                            '''
-                
-                # Combine into final input fields HTML
-                input_fields_html = f'''
-                    <div class="bw-skip-controls" style="margin-top:12px;padding:12px;background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(139,92,246,.08));border:1px solid rgba(59,130,246,.2);border-radius:10px;position:relative;">
-                        <div style="position:absolute;top:-8px;left:12px;background:linear-gradient(135deg,rgba(15,23,42,.95),rgba(30,41,59,.95));padding:2px 8px;border-radius:6px;font-size:10px;color:#93c5fd;font-weight:600;border:1px solid rgba(59,130,246,.3);">Skip Times</div>
-                        
-                        <div style="display:flex;flex-direction:column;gap:8px;">
-                            {intro_section_html}
-                            {end_section_html}
-                        </div>
-                    </div>
-                '''
-
             series_items.append(f"""
                 <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}" data-provider="{provider_id}"
+                     data-intro-start="{intro_val}" data-intro-end="{intro_end_val}" data-end-skip="{end_skip_val}"
                      style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
                             border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
                     
@@ -2258,9 +2192,12 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
                         </div>
                         <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:8px;border-radius:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;margin-left:8px;transition:all .2s ease;hover:background:rgba(239,68,68,.2);" title="Remove series">X</div>
                     </div>
-                    
-                    <!-- Skip Time Controls -->
-                    {input_fields_html}
+                    <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+                        <button class="bw-series-settings" data-series="{safe_name}" data-intro-start="{intro_val}" data-intro-end="{intro_end_val}" data-end-skip="{end_skip_val}"
+                                style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;font-size:11px;cursor:pointer;transition:all .2s ease;">
+                            Skip Times
+                        </button>
+                    </div>
                 </div>
             """)
         
@@ -2325,9 +2262,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   <span class="chev">❮</span>
                   </button>
 
-                  <div style="margin-top:12px;display:flex;gap:8px;">
+                  <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
                   <input id="bwSearch" placeholder="Search..." style="flex:1;padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;"/>
-                  <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;">
+                  <select id="bwSort" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(2,6,23,.35);color:#e2e8f0;min-width:120px;max-width:120px;flex:0 0 120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                       <option value="time">Last watched</option>
                       <option value="name">Name</option>
                   </select>
@@ -2391,14 +2328,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               /* Handle */
               #bingeSidebar .bw-handle{
                 position:absolute; top:85px; right:-18px; width:32px; height:32px; border-radius:999px;
-                border:1px solid rgba(148,163,184,.35); background:rgba(2,6,23,.85);
+                border:1px solid rgba(59,130,246,.6); background:linear-gradient(135deg,rgba(30,41,59,.95),rgba(2,6,23,.95));
                 backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; cursor:pointer;
-                box-shadow:0 6px 20px rgba(0,0,0,.4);
-                transition: transform .2s ease, background .2s ease, border-color .2s ease;
+                box-shadow:0 6px 20px rgba(0,0,0,.4), 0 0 0 2px rgba(59,130,246,.18);
+                transition: transform .2s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease;
               }
               #bingeSidebar .bw-handle::after{ content:""; position:absolute; inset:-8px; } /* größere Klickfläche */
-              #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:rgba(15,23,42,.9); border-color:rgba(148,163,184,.5); }
-              #bingeSidebar .chev{ font-size:16px; line-height:1; transition: transform .2s ease; }
+              #bingeSidebar .bw-handle:hover{ transform:translateY(-1px); background:linear-gradient(135deg,rgba(30,41,59,1),rgba(15,23,42,1)); border-color:rgba(59,130,246,.85); box-shadow:0 8px 22px rgba(0,0,0,.45), 0 0 0 2px rgba(59,130,246,.3); }
+              #bingeSidebar .chev{ font-size:16px; line-height:1; color:#e2e8f0; text-shadow:0 0 8px rgba(59,130,246,.45); transition: transform .2s ease, color .2s ease; }
               #bingeSidebar[data-collapsed="1"] .bw-handle .chev{ transform: rotate(180deg); }
   
               /* Body */
@@ -2406,7 +2343,8 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 transition: opacity .2s ease;
                 padding:12px;
                 overflow-y:auto;
-                height:calc(100vh - 116px); /* Headerhöhe anpassen falls nötig */
+                height:calc(100vh - 150px); /* Headerhöhe anpassen falls nötig */
+                box-sizing:border-box;
               }
   
               /* Elemente nur ausblenden, wenn wirklich collapsed UND nicht gepeekt/gehovered */
@@ -2436,6 +2374,13 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 transition: all .2s ease;
               }
               
+              #bingeSidebar .bw-provider-tab[data-active="1"] {
+                background: rgba(255,255,255,.08) !important;
+                color: #f8fafc !important;
+                border-bottom: 2px solid rgba(148,163,184,.55) !important;
+                box-shadow: inset 0 -2px 0 rgba(148,163,184,.2);
+              }
+              
               #bingeSidebar .bw-provider-tab:hover {
                 background: rgba(255,255,255,.08) !important;
                 color: #f8fafc !important;
@@ -2457,15 +2402,30 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               }
               
               #bingeSidebar .bw-provider-switch.active {
-                border-color: rgba(255,255,255,.3) !important;
-                background: rgba(255,255,255,.15) !important;
+                border-color: rgba(59,130,246,.7) !important;
+                background: linear-gradient(135deg, rgba(59,130,246,.25), rgba(139,92,246,.25)) !important;
                 color: #f8fafc !important;
-                box-shadow: 0 0 0 1px rgba(255,255,255,.1);
+                box-shadow: 0 0 0 1px rgba(59,130,246,.25), 0 6px 16px rgba(15,23,42,.35);
+                position: relative;
+              }
+              #bingeSidebar .bw-provider-switch.active::after {
+                content: '';
+                position: absolute;
+                inset: -2px;
+                border-radius: 8px;
+                border: 1px solid rgba(59,130,246,.35);
+                pointer-events: none;
               }
               
               #bingeSidebar .bw-provider-switch:hover {
                 border-color: rgba(255,255,255,.25) !important;
                 background: rgba(255,255,255,.12) !important;
+                transform: translateY(-1px);
+              }
+
+              #bingeSidebar .bw-series-settings:hover {
+                background: rgba(59,130,246,.2) !important;
+                border-color: rgba(59,130,246,.55) !important;
                 transform: translateY(-1px);
               }
               
@@ -2684,6 +2644,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   tab.style.background = 'rgba(255,255,255,.05)';
                   tab.style.color = '#94a3b8';
                   tab.style.borderBottom = 'none';
+                  tab.removeAttribute('data-active');
                 });
                 
                 // Alle Contents ausblenden
@@ -2697,6 +2658,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   activeTab.style.background = 'rgba(255,255,255,.1)';
                   activeTab.style.color = '#f8fafc';
                   activeTab.style.borderBottom = '2px solid rgba(255,255,255,.2)';
+                  activeTab.setAttribute('data-active', '1');
                 }
                 
                 // Gewählten Content anzeigen
@@ -2749,6 +2711,183 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               d.addEventListener('input', (e)=>{ if (e.target && e.target.id==='bwSearch') onFilter(); });
               d.addEventListener('change', (e)=>{ if (e.target && e.target.id==='bwSort') onSort(); });
 
+              const openSeriesSkipPanel = (seriesName, introStart, introEnd, endSkip) => {
+                if (window.__bwSkipPanelCleanup) {
+                  window.__bwSkipPanelCleanup();
+                  window.__bwSkipPanelCleanup = null;
+                }
+                const existingPanel = document.getElementById('bwSeriesSkipPanel');
+                if (existingPanel) {
+                  existingPanel.remove();
+                }
+
+                let settingsData = {};
+                try {
+                  settingsData = JSON.parse(localStorage.getItem('bw_settings') || '{}');
+                } catch(_) {}
+                const allowIntro = settingsData.autoSkipIntro !== false;
+                const allowEnd = settingsData.autoSkipEndScreen === true;
+
+                const panel = document.createElement('div');
+                panel.id = 'bwSeriesSkipPanel';
+                Object.assign(panel.style, {
+                  position: 'fixed',
+                  right: '16px',
+                  top: '120px',
+                  width: '320px',
+                  background: 'rgba(2,6,23,.94)',
+                  border: '1px solid rgba(59,130,246,.2)',
+                  borderRadius: '12px',
+                  color: '#e2e8f0',
+                  padding: '16px',
+                  zIndex: 2147483647,
+                  boxShadow: '0 10px 30px rgba(0,0,0,.4)',
+                });
+
+                const introSectionHtml = allowIntro ? `
+                  <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:6px;">
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <div style="width:12px;height:12px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">&gt;</div>
+                      <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip</span>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Start (s)</label>
+                        <input class="bw-intro-start" data-series="${seriesName}" type="number" min="0" value="${introStart}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
+                               placeholder="0" title="Intro start time (seconds)"/>
+                      </div>
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">End (s)</label>
+                        <input class="bw-intro-end" data-series="${seriesName}" type="number" min="0" value="${introEnd}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
+                               placeholder="0" title="Intro end time (seconds)"/>
+                      </div>
+                    </div>
+                  </div>
+                ` : '';
+
+                const endSectionHtml = allowEnd ? `
+                  <div class="bw-end-section" style="display:flex;flex-direction:column;gap:6px;">
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <div style="width:12px;height:12px;background:linear-gradient(135deg,#ef4444,#dc2626);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">[]</div>
+                      <span style="font-size:11px;color:#cbd5e1;font-weight:500;">End Skip</span>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Skip at (s)</label>
+                        <input class="bw-end" data-series="${seriesName}" type="number" min="0" value="${endSkip}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
+                               placeholder="0" title="Skip to end at this time (seconds)"/>
+                      </div>
+                    </div>
+                  </div>
+                ` : '';
+
+                panel.style.left = (window.innerWidth - 16 - 320) + 'px';
+                panel.innerHTML = `
+                  <div id="bwSeriesSkipDragHandle" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;cursor:move;">
+                    <div style="font-weight:600">Skip Times · ${seriesName}</div>
+                    <button id="bwCloseSeriesSkip" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">X</button>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:10px;">
+                    ${introSectionHtml}
+                    ${endSectionHtml}
+                  </div>
+                `;
+
+                document.body.appendChild(panel);
+
+                let handleDocumentMouseMove = null;
+                let handleDocumentMouseUp = null;
+                const closePanel = () => {
+                  if (handleDocumentMouseMove) {
+                    document.removeEventListener('mousemove', handleDocumentMouseMove);
+                  }
+                  if (handleDocumentMouseUp) {
+                    document.removeEventListener('mouseup', handleDocumentMouseUp);
+                  }
+                  if (panel && panel.parentElement) {
+                    panel.parentElement.removeChild(panel);
+                  }
+                };
+                window.__bwSkipPanelCleanup = closePanel;
+                const closeButton = document.getElementById('bwCloseSeriesSkip');
+                if (closeButton) closeButton.addEventListener('click', closePanel);
+                const skipDragHandle = document.getElementById('bwSeriesSkipDragHandle');
+                if (skipDragHandle) {
+                  let skipIsDragging = false;
+                  let skipDragStartX = 0;
+                  let skipDragStartY = 0;
+                  let skipInitialLeft = 0;
+                  let skipInitialTop = 0;
+
+                  skipDragHandle.addEventListener('mousedown', (ev) => {
+                    skipIsDragging = true;
+                    skipDragStartX = ev.clientX;
+                    skipDragStartY = ev.clientY;
+                    const currentLeft = panel.style.left || String(panel.getBoundingClientRect().left);
+                    const currentTop = panel.style.top || String(panel.getBoundingClientRect().top);
+                    skipInitialLeft = parseInt(currentLeft, 10) || 0;
+                    skipInitialTop = parseInt(currentTop, 10) || 0;
+                    ev.preventDefault();
+                  });
+
+                  handleDocumentMouseMove = (ev) => {
+                    if (!skipIsDragging) return;
+                    const deltaX = ev.clientX - skipDragStartX;
+                    const deltaY = ev.clientY - skipDragStartY;
+                    const newLeft = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, skipInitialLeft + deltaX));
+                    const newTop = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, skipInitialTop + deltaY));
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top = newTop + 'px';
+                  };
+
+                  handleDocumentMouseUp = () => {
+                    skipIsDragging = false;
+                  };
+
+                  document.addEventListener('mousemove', handleDocumentMouseMove);
+                  document.addEventListener('mouseup', handleDocumentMouseUp);
+                }
+
+                if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
+                panel.addEventListener('input', (ev) => {
+                  const introInput = ev.target.closest && ev.target.closest('input.bw-intro-start');
+                  if (introInput) {
+                    const series = introInput.dataset.series; if (!series) return;
+                    const key = '__deb_intro_start_' + series;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(introInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_start_update', JSON.stringify({ series, seconds }));
+                    }, 600);
+                  }
+
+                  const introEndInput = ev.target.closest && ev.target.closest('input.bw-intro-end');
+                  if (introEndInput) {
+                    const series = introEndInput.dataset.series; if (!series) return;
+                    const key = '__deb_intro_end_' + series;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(introEndInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_end_update', JSON.stringify({ series, seconds }));
+                    }, 600);
+                  }
+
+                  const endInput = ev.target.closest && ev.target.closest('input.bw-end');
+                  if (endInput) {
+                    const series = endInput.dataset.series; if (!series) return;
+                    const key = '__deb_end_' + series;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(endInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_end_update', JSON.stringify({ series, seconds }));
+                    }, 600);
+                  }
+                });
+              };
+
               d.addEventListener('click', (e)=>{
                 const c = sel => e.target.closest && e.target.closest(sel);
 
@@ -2786,10 +2925,10 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                         <option value="2">2x</option>
                       </select>
                     </label>
-                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;width:100%;box-sizing:border-box;">
                         <span>Volume</span>
-                        <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
-                        <span id="bwVolumeVal" style="width:40px;text-align:right;"></span>
+                        <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1;min-width:0;"/>
+                        <span id="bwVolumeVal" style="flex:0 0 44px;min-width:44px;max-width:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;display:inline-block;"></span>
                     </label>
                     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
                       <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Save</button>
@@ -2871,12 +3010,27 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   const formElements = panel.querySelectorAll('input, select, button, label');
                   formElements.forEach(element => {
                     element.addEventListener('mousedown', (e) => {
+                      if (element.id === 'bwCloseSettings') {
+                        return;
+                      }
                       e.stopPropagation();
                     });
                     element.addEventListener('click', (e) => {
+                      if (element.id === 'bwCloseSettings') {
+                        return;
+                      }
                       e.stopPropagation();
                     });
                   });
+                  
+                  const closeButton = document.getElementById('bwCloseSettings');
+                  if (closeButton) {
+                    closeButton.addEventListener('click', (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      p.remove();
+                    });
+                  }
                   
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
@@ -2895,12 +3049,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     });
                   } catch(_){}
                   p.addEventListener('click', (ev)=>{
+                    if (ev.target && ev.target.id === 'bwCloseSettings') {
+                      p.remove();
+                      return;
+                    }
                     // Prevent dragging when clicking on interactive elements
                     if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'BUTTON' || ev.target.closest('label')) {
                       return;
                     }
-                    
-                    if (ev.target && ev.target.id==='bwCloseSettings') { p.remove(); }
                                          if (ev.target && ev.target.id==='bwSaveSettings') {
                                               const next = {
                           autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
@@ -2932,13 +3088,26 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   return;
                 }
 
+                const skipPanelButton = c('.bw-series-settings');
+                if (skipPanelButton) {
+                  const seriesName = skipPanelButton.getAttribute('data-series');
+                  const introStart = parseInt(skipPanelButton.getAttribute('data-intro-start') || '0', 10) || 0;
+                  const introEnd = parseInt(skipPanelButton.getAttribute('data-intro-end') || '0', 10) || 0;
+                  const endSkip = parseInt(skipPanelButton.getAttribute('data-end-skip') || '0', 10) || 0;
+                  if (seriesName) {
+                    openSeriesSkipPanel(seriesName, introStart, introEnd, endSkip);
+                  }
+                  return;
+                }
+
                                  const item = c('.bw-series-item');
                  if (item) {
                      // Check if click originated from input field or delete button - don't trigger navigation
                      const clickedInput = e.target.closest && (e.target.closest('input.bw-intro-start') || e.target.closest('input.bw-intro-end'));
                      const clickedEndInput = e.target.closest && e.target.closest('input.bw-end');
                      const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
-                     if (clickedInput || clickedEndInput || clickedDelete) return;
+                     const clickedSkipSettings = e.target.closest && e.target.closest('.bw-series-settings');
+                     if (clickedInput || clickedEndInput || clickedDelete || clickedSkipSettings) return;
                     
                     if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
                     localStorage.setItem('bw_nav_inflight','1');

@@ -5,15 +5,52 @@ REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
 echo Starting Binge Watching...
 
-REM === Check Tor setting from settings.json ===
-set USE_TOR=false
-for /f "tokens=2 delims=:," %%a in ('findstr /C:"useTorProxy" settings.json') do (
-    set TOR_VALUE=%%a
-    set TOR_VALUE=!TOR_VALUE: =!
-    if "!TOR_VALUE!"=="true" set USE_TOR=true
+REM === Required Python modules ===
+set modules=selenium configparser
+
+REM === Check Python installation ===
+python --version >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [X] Python is not installed or not added to PATH.
+    pause
+    exit /b 1
 )
 
-if "%USE_TOR%"=="true" (
+REM === Check and install missing modules ===
+set "missing_modules="
+
+for %%m in (%modules%) do (
+    python -c "import %%m" >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo [-] Missing Python module: %%m
+        set "missing_modules=!missing_modules! %%m"
+    ) else (
+        echo [+] Python module '%%m' already installed.
+    )
+)
+
+if not "!missing_modules!"=="" (
+    echo Installing missing modules:!missing_modules!
+    python -m pip install --upgrade pip >nul 2>&1
+    python -m pip install !missing_modules!
+    if !ERRORLEVEL! NEQ 0 (
+        echo [X] Failed to install modules. Please install manually.
+        pause
+        exit /b 1
+    )
+) else (
+    echo [=] All dependencies satisfied.
+)
+
+REM === Check Tor setting from settings.json ===
+set "USE_TOR=false"
+for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "try { $json = Get-Content -Raw 'settings.json' | ConvertFrom-Json; $value = $json.useTorProxy; if ($value -is [string]) { $value = $value.Trim().ToLower() -eq 'true' } else { $value = [bool]$value }; if ($value) { 'true' } else { 'false' } } catch { 'false' }"`) do (
+    set "USE_TOR=%%a"
+    goto :tor_setting_done
+)
+:tor_setting_done
+
+if /i "%USE_TOR%"=="true" (
     echo [i] Tor DNS enabled in settings.json - starting Tor...
     
     REM === Start Tor process (hidden window) ===
@@ -54,45 +91,6 @@ if "%USE_TOR%"=="true" (
         exit /b 1
     )
     echo [+] Tor started successfully.
-) else (
-    echo [i] Tor DNS disabled in settings.json - skipping Tor startup.
-)
-
-REM === Required Python modules ===
-set modules=selenium configparser
-
-REM === Check Python installation ===
-python --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [X] Python is not installed or not added to PATH.
-    pause
-    exit /b 1
-)
-
-REM === Check and install missing modules ===
-set "missing_modules="
-
-for %%m in (%modules%) do (
-    python -c "import %%m" >nul 2>&1
-    if !ERRORLEVEL! NEQ 0 (
-        echo [-] Missing Python module: %%m
-        set "missing_modules=!missing_modules! %%m"
-    ) else (
-        echo [+] Python module '%%m' already installed.
-    )
-)
-
-if not "!missing_modules!"=="" (
-    echo Installing missing modules:!missing_modules!
-    python -m pip install --upgrade pip >nul 2>&1
-    python -m pip install !missing_modules!
-    if !ERRORLEVEL! NEQ 0 (
-        echo [X] Failed to install modules. Please install manually.
-        pause
-        exit /b 1
-    )
-) else (
-    echo [=] All dependencies satisfied.
 )
 
 REM === Start Python Script ===
