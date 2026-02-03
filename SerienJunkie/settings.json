@@ -1,5 +1,5 @@
 {
-  "useTorProxy": true,
+  "useTorProxy": false,
   "autoFullscreen": true,
   "autoSkipIntro": true,
   "autoSkipEndScreen": true,
