@@ -2366,7 +2366,8 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 transition: opacity .2s ease;
                 padding:12px;
                 overflow-y:auto;
-                height:calc(100vh - 116px); /* Headerhöhe anpassen falls nötig */
+                height:calc(100vh - 150px); /* Headerhöhe anpassen falls nötig */
+                box-sizing:border-box;
               }
   
               /* Elemente nur ausblenden, wenn wirklich collapsed UND nicht gepeekt/gehovered */
