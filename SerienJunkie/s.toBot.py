@@ -1749,7 +1749,10 @@ def ensure_fullscreen_for_episode(driver: webdriver.Firefox) -> bool:
             v = driver.find_element(By.TAG_NAME, "video")
             ActionChains(driver).move_to_element(v).double_click().perform()
             time.sleep(0.2)
-            return _is_fullscreen(driver)
+            if _is_fullscreen(driver):
+                log_fullscreen_method("episode_video_double_click")
+                return True
+            return False
         except Exception:
             return False
     except Exception:
@@ -1786,7 +1789,11 @@ def should_attempt_fullscreen(
     return True
 
 
-def enable_fullscreen(driver):
+def log_fullscreen_method(method_name: str) -> None:
+    logging.info("Fullscreen method: %s", method_name)
+
+
+def enable_fullscreen(driver: webdriver.Firefox) -> bool:
     """
     Verbesserte Vollbild-Aktivierung mit mehreren Fallback-Strategien.
     Berücksichtigt User-Gesture-Requirements und verschiedene Player-APIs.
@@ -1794,6 +1801,7 @@ def enable_fullscreen(driver):
     try:
         ensure_video_context(driver)
         if _is_fullscreen(driver):
+            log_fullscreen_method("already_fullscreen")
             return True
 
         # 1. Zuerst sicherstellen, dass wir im richtigen Kontext sind
@@ -1848,6 +1856,9 @@ def enable_fullscreen(driver):
                             ActionChains(driver).move_to_element(el).click().perform()
                             time.sleep(0.15)
                             if _is_fullscreen(driver):
+                                log_fullscreen_method(
+                                    f"player_button:{sel}"
+                                )
                                 return True
                         except Exception:
                             pass
@@ -1856,6 +1867,9 @@ def enable_fullscreen(driver):
                             driver.execute_script("arguments[0].click();", el)
                             time.sleep(0.15)
                             if _is_fullscreen(driver):
+                                log_fullscreen_method(
+                                    f"player_button_js:{sel}"
+                                )
                                 return True
                         except Exception:
                             pass
@@ -1869,6 +1883,7 @@ def enable_fullscreen(driver):
             ActionChains(driver).move_to_element(btn).click().perform()
             time.sleep(0.3)
             if _is_fullscreen(driver):
+                log_fullscreen_method("heuristic_button")
                 return True
         except Exception:
             pass
@@ -1885,6 +1900,7 @@ def enable_fullscreen(driver):
             ActionChains(driver).move_to_element(v).double_click().perform()
             time.sleep(0.15)
             if _is_fullscreen(driver):
+                log_fullscreen_method("video_double_click")
                 return True
         except Exception:
             pass
@@ -1919,6 +1935,7 @@ def enable_fullscreen(driver):
             ActionChains(driver).send_keys("f").pause(0.05).perform()
             time.sleep(0.15)
             if _is_fullscreen(driver):
+                log_fullscreen_method("keyboard_f")
                 return True
         except Exception:
             pass
@@ -1962,6 +1979,7 @@ def enable_fullscreen(driver):
                             driver.switch_to.frame(target_iframe)
                         except Exception:
                             pass
+                        log_fullscreen_method("iframe_request_fullscreen")
                         return True
                 except Exception:
                     pass
@@ -1973,6 +1991,7 @@ def enable_fullscreen(driver):
         # 7. Geckodriver-spezifische Viewport-Klicks
         try:
             if _hard_fullscreen_click(driver):
+                log_fullscreen_method("geckodriver_viewport_click")
                 return True
         except Exception:
             pass
@@ -2009,6 +2028,7 @@ def enable_fullscreen(driver):
             )
             time.sleep(0.15)
             if _is_fullscreen(driver):
+                log_fullscreen_method("native_video_request")
                 return True
         except Exception:
             pass
@@ -2067,6 +2087,7 @@ def enable_fullscreen(driver):
             )
             time.sleep(0.2)
             if _is_fullscreen(driver):
+                log_fullscreen_method("player_api")
                 return True
         except Exception:
             pass
@@ -2076,12 +2097,14 @@ def enable_fullscreen(driver):
             driver.fullscreen_window()
             time.sleep(0.15)
             if _is_fullscreen(driver):
+                log_fullscreen_method("browser_fullscreen_window")
                 return True
         except Exception:
             try:
                 ActionChains(driver).send_keys(Keys.F11).perform()
                 time.sleep(0.2)
                 if _is_fullscreen(driver):
+                    log_fullscreen_method("browser_f11")
                     return True
             except Exception:
                 pass
