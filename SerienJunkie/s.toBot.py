@@ -909,7 +909,14 @@ def popout_player_iframe(driver) -> bool:
         return False
 
 
-def play_episodes_loop(driver, series, season, episode, position=0, provider="s.to"):
+def play_episodes_loop(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    episode: int,
+    position: int = 0,
+    provider: str = "s.to",
+) -> None:
     global should_quit
     current_episode = episode
     current_season = season
@@ -927,6 +934,8 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
         auto_next = settings["autoNext"]
         rate = settings["playbackRate"]
         vol = settings["volume"]
+        fullscreen_pending: bool = False
+        last_fullscreen_attempt_ts: float = 0.0
 
         print(
             f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
@@ -1028,8 +1037,12 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
             time.sleep(0.1)
-
-            ok = ensure_fullscreen_for_episode(driver)
+            if should_attempt_fullscreen(driver, last_fullscreen_attempt_ts, 1.5):
+                last_fullscreen_attempt_ts = time.time()
+                ok = ensure_fullscreen_for_episode(driver)
+            else:
+                ok = False
+                fullscreen_pending = True
             
             if not ok and os.getenv("BW_POPOUT_IFRAME", "false").lower() in {
                 "1",
@@ -1041,7 +1054,12 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                     _hide_sidebar(driver, True)
                     ensure_video_context(driver)
                     time.sleep(0.1)
-                    ok = ensure_fullscreen_for_episode(driver)
+                    if should_attempt_fullscreen(driver, last_fullscreen_attempt_ts, 1.5):
+                        last_fullscreen_attempt_ts = time.time()
+                        ok = ensure_fullscreen_for_episode(driver)
+                    else:
+                        ok = False
+                        fullscreen_pending = True
 
         try:
             for _ in range(8):
@@ -1351,8 +1369,17 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
 
             if auto_fs and not HEADLESS:
                 try:
-                    if is_document_focused(driver) and not _is_fullscreen(driver):
-                        ensure_fullscreen_for_episode(driver)
+                    if fullscreen_pending and not _is_fullscreen(driver):
+                        if should_attempt_fullscreen(
+                            driver,
+                            last_fullscreen_attempt_ts,
+                            1.5,
+                        ):
+                            last_fullscreen_attempt_ts = time.time()
+                            if ensure_fullscreen_for_episode(driver):
+                                fullscreen_pending = False
+                    if not fullscreen_pending and not _is_fullscreen(driver):
+                        fullscreen_pending = True
                 except Exception:
                     pass
 
@@ -1745,6 +1772,18 @@ def is_document_focused(driver: webdriver.Firefox) -> bool:
         )
     except Exception:
         return False
+
+
+def should_attempt_fullscreen(
+    driver: webdriver.Firefox,
+    last_attempt_ts: float,
+    min_interval_s: float,
+) -> bool:
+    if not is_document_focused(driver):
+        return False
+    if time.time() - last_attempt_ts < min_interval_s:
+        return False
+    return True
 
 
 def enable_fullscreen(driver):
