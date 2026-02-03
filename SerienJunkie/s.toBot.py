@@ -1349,6 +1349,13 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
             if remaining_time <= 3:
                 break
 
+            if auto_fs and not HEADLESS:
+                try:
+                    if is_document_focused(driver) and not _is_fullscreen(driver):
+                        ensure_fullscreen_for_episode(driver)
+                except Exception:
+                    pass
+
             time.sleep(1.0)
 
         if auto_nav:
@@ -1702,6 +1709,8 @@ def pause_video(driver):
 def ensure_fullscreen_for_episode(driver: webdriver.Firefox) -> bool:
     try:
         driver.switch_to.default_content()
+        if not is_document_focused(driver):
+            return False
         if _is_fullscreen(driver):
             exit_fullscreen(driver)
             time.sleep(0.2)
@@ -1716,6 +1725,24 @@ def ensure_fullscreen_for_episode(driver: webdriver.Firefox) -> bool:
             return _is_fullscreen(driver)
         except Exception:
             return False
+    except Exception:
+        return False
+
+
+def is_document_focused(driver: webdriver.Firefox) -> bool:
+    try:
+        driver.switch_to.default_content()
+        return bool(
+            driver.execute_script(
+                """
+                try {
+                  const isVisible = document.visibilityState === 'visible';
+                  const hasFocus = document.hasFocus && document.hasFocus();
+                  return isVisible && hasFocus;
+                } catch(_) { return false; }
+            """
+            )
+        )
     except Exception:
         return False
 
