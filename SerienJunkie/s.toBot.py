@@ -2780,6 +2780,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   </div>
                 ` : '';
 
+                panel.style.left = (window.innerWidth - 16 - 320) + 'px';
                 panel.innerHTML = `
                   <div id="bwSeriesSkipDragHandle" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;cursor:move;">
                     <div style="font-weight:600">Skip Times · ${seriesName}</div>
@@ -2808,8 +2809,10 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     skipIsDragging = true;
                     skipDragStartX = ev.clientX;
                     skipDragStartY = ev.clientY;
-                    skipInitialLeft = parseInt(panel.style.left || '0', 10) || 0;
-                    skipInitialTop = parseInt(panel.style.top || '0', 10) || 0;
+                    const currentLeft = panel.style.left || String(panel.getBoundingClientRect().left);
+                    const currentTop = panel.style.top || String(panel.getBoundingClientRect().top);
+                    skipInitialLeft = parseInt(currentLeft, 10) || 0;
+                    skipInitialTop = parseInt(currentTop, 10) || 0;
                     ev.preventDefault();
                   });
 
