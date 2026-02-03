@@ -91,8 +91,6 @@ if /i "%USE_TOR%"=="true" (
         exit /b 1
     )
     echo [+] Tor started successfully.
-) else (
-    echo [i] Tor DNS disabled in settings.json - skipping Tor startup.
 )
 
 REM === Start Python Script ===
