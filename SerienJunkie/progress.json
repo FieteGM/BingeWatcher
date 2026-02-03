@@ -1,7 +1,7 @@
 {
   "one-piece": {
     "season": 1,
-    "episode": 1,
+    "episode": 2,
     "position": 0,
     "timestamp": 0,
     "provider": "s.to",
@@ -21,8 +21,8 @@
   "one-punch-man": {
     "season": 1,
     "episode": 2,
-    "position": 88,
-    "timestamp": 1756323483.093002,
+    "position": 0,
+    "timestamp": 0,
     "provider": "aniworld.to",
     "intro_skip_start": 85,
     "intro_skip_end": 145
@@ -48,8 +48,8 @@
   "demon-slayer-kimetsu-no-yaiba": {
     "season": 1,
     "episode": 12,
-    "position": 77,
-    "timestamp": 1756324608.2747717,
+    "position": 0,
+    "timestamp": 0,
     "provider": "aniworld.to",
     "intro_skip_start": 85,
     "intro_skip_end": 145
