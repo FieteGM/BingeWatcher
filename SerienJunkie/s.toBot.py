@@ -601,7 +601,7 @@ def _hard_fullscreen_click(driver) -> bool:
 
 
 # === SETTINGS HANDLING --------------------------- ===
-def get_settings(driver):
+def get_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     file_s = load_settings_file()
     ls_s = read_settings(driver) or {}
 
@@ -647,7 +647,7 @@ def save_settings_file(settings: Dict[str, Any]) -> bool:
         return False
 
 
-def sync_settings_to_localstorage(driver):
+def sync_settings_to_localstorage(driver: webdriver.Firefox) -> None:
     """Schreibt Datei-Settings in localStorage, falls dort leer/nicht gesetzt."""
     try:
         driver.switch_to.default_content()
@@ -680,6 +680,25 @@ def _default_settings() -> Dict[str, Any]:
         "playbackRate": 1.0,
         "volume": 1.0,
     }
+
+
+def read_localstorage_value(
+    driver: webdriver.Firefox,
+    key: str,
+) -> Optional[str]:
+    try:
+        driver.switch_to.default_content()
+        value = driver.execute_script(
+            """
+            let r = localStorage.getItem(arguments[0]);
+            if (r) localStorage.removeItem(arguments[0]);
+            return r;
+        """,
+            key,
+        )
+        return value if isinstance(value, str) else None
+    except Exception:
+        return None
 
 
 # === NAVIGATION HANDLING --------------------------- ===
@@ -1009,8 +1028,8 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
             time.sleep(0.1)
-            
-            ok = enable_fullscreen(driver)
+
+            ok = ensure_fullscreen_for_episode(driver)
             
             if not ok and os.getenv("BW_POPOUT_IFRAME", "false").lower() in {
                 "1",
@@ -1022,7 +1041,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                     _hide_sidebar(driver, True)
                     ensure_video_context(driver)
                     time.sleep(0.1)
-                    ok = enable_fullscreen(driver)
+                    ok = ensure_fullscreen_for_episode(driver)
 
         try:
             for _ in range(8):
@@ -1158,13 +1177,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
 
             # --- LIVE SETTINGS UPDATE ---------------------------------------
             try:
-                raw = driver.execute_script(
-                    """
-                    let r = localStorage.getItem('bw_settings_update');
-                    if (r) localStorage.removeItem('bw_settings_update');
-                    return r;
-                """
-                )
+                raw = read_localstorage_value(driver, "bw_settings_update")
                 if raw:
                     upd = json.loads(raw)
                     # Datei persistieren
@@ -1224,7 +1237,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                         )
                     except Exception:
                         pass
-                    
+
                     # UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
                     try:
                         html = build_items_html(load_progress(), settings)
@@ -1234,6 +1247,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                         )
                     except Exception:
                         pass
+                ensure_video_context(driver)
             except Exception:
                 pass
             # ----------------------------------------------------------------
@@ -1685,6 +1699,27 @@ def pause_video(driver):
         pass
 
 
+def ensure_fullscreen_for_episode(driver: webdriver.Firefox) -> bool:
+    try:
+        driver.switch_to.default_content()
+        if _is_fullscreen(driver):
+            exit_fullscreen(driver)
+            time.sleep(0.2)
+        ensure_video_context(driver)
+        ok = enable_fullscreen(driver)
+        if ok:
+            return True
+        try:
+            v = driver.find_element(By.TAG_NAME, "video")
+            ActionChains(driver).move_to_element(v).double_click().perform()
+            time.sleep(0.2)
+            return _is_fullscreen(driver)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def enable_fullscreen(driver):
     """
     Verbesserte Vollbild-Aktivierung mit mehreren Fallback-Strategien.
@@ -2110,6 +2145,7 @@ def get_cookie(driver, name):
 # === SIDEBAR FUNCTIONS --------------------------- ===
 def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     try:
+        driver.switch_to.default_content()
         data = driver.execute_script(
             """
             try {
@@ -3011,6 +3047,29 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       p.remove();
                     });
                   }
+                  const saveButton = document.getElementById('bwSaveSettings');
+                  if (saveButton) {
+                    saveButton.addEventListener('click', (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const next = {
+                        autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
+                        autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
+                        autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
+                        autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
+                        playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
+                        volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
+                      };
+                      localStorage.setItem('bw_settings', JSON.stringify(next));
+                      localStorage.setItem('bw_settings_update', JSON.stringify(next));
+
+                      try {
+                        localStorage.setItem('bw_ui_update_needed', '1');
+                      } catch(_) {}
+
+                      p.remove();
+                    });
+                  }
                   
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
@@ -3037,26 +3096,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'BUTTON' || ev.target.closest('label')) {
                       return;
                     }
-                                         if (ev.target && ev.target.id==='bwSaveSettings') {
-                                              const next = {
-                          autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
-                          autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
-                          autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
-                          autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
-                          playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
-                          volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
-                        };
-                       localStorage.setItem('bw_settings', JSON.stringify(next));
-                       localStorage.setItem('bw_settings_update', JSON.stringify(next));
-                       
-                       // UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
-                       try {
-                         // Trigger UI update by setting a flag
-                         localStorage.setItem('bw_ui_update_needed', '1');
-                       } catch(_) {}
-                       
-                       p.remove();
-                     }
                   });
                   return;
                 }
@@ -3324,13 +3363,7 @@ def main() -> None:
 
                 # Handle settings updates (from settings panel)
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_settings_update');
-                        if (r) localStorage.removeItem('bw_settings_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_settings_update")
                     if upd:
                         data = json.loads(upd)
                         save_settings_file(data)
