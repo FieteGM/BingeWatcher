@@ -2807,7 +2807,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                         <span>Volume</span>
                         <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
-                        <span id="bwVolumeVal" style="width:40px;text-align:right;"></span>
+                        <span id="bwVolumeVal" style="min-width:48px;max-width:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;display:inline-block;"></span>
                     </label>
                     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
                       <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Save</button>
@@ -2889,12 +2889,27 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   const formElements = panel.querySelectorAll('input, select, button, label');
                   formElements.forEach(element => {
                     element.addEventListener('mousedown', (e) => {
+                      if (element.id === 'bwCloseSettings') {
+                        return;
+                      }
                       e.stopPropagation();
                     });
                     element.addEventListener('click', (e) => {
+                      if (element.id === 'bwCloseSettings') {
+                        return;
+                      }
                       e.stopPropagation();
                     });
                   });
+                  
+                  const closeButton = document.getElementById('bwCloseSettings');
+                  if (closeButton) {
+                    closeButton.addEventListener('click', (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      p.remove();
+                    });
+                  }
                   
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');

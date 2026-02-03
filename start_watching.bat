@@ -44,11 +44,13 @@ if not "!missing_modules!"=="" (
 
 REM === Check Tor setting from settings.json ===
 set "USE_TOR=false"
-for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "try { $json = Get-Content -Raw 'settings.json' | ConvertFrom-Json; if ($null -ne $json.useTorProxy -and $json.useTorProxy -eq $true) { 'true' } else { 'false' } } catch { 'false' }"`) do (
+for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "try { $json = Get-Content -Raw 'settings.json' | ConvertFrom-Json; $value = $json.useTorProxy; if ($value -is [string]) { $value = $value.Trim().ToLower() -eq 'true' } else { $value = [bool]$value }; if ($value) { 'true' } else { 'false' } } catch { 'false' }"`) do (
     set "USE_TOR=%%a"
+    goto :tor_setting_done
 )
+:tor_setting_done
 
-if "%USE_TOR%"=="true" (
+if /i "%USE_TOR%"=="true" (
     echo [i] Tor DNS enabled in settings.json - starting Tor...
     
     REM === Start Tor process (hidden window) ===
