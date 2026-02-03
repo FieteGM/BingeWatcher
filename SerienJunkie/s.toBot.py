@@ -2804,10 +2804,10 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                         <option value="2">2x</option>
                       </select>
                     </label>
-                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+                    <label style="display:flex;align-items:center;gap:8px;margin:8px 0;width:100%;box-sizing:border-box;">
                         <span>Volume</span>
-                        <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1"/>
-                        <span id="bwVolumeVal" style="min-width:48px;max-width:48px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;display:inline-block;"></span>
+                        <input type="range" id="bwOptVolume" min="0" max="1" step="0.05" style="flex:1;min-width:0;"/>
+                        <span id="bwVolumeVal" style="flex:0 0 44px;min-width:44px;max-width:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;display:inline-block;"></span>
                     </label>
                     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
                       <button id="bwSaveSettings" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;cursor:pointer;">Save</button>
