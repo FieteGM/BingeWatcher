@@ -3,6 +3,10 @@ setlocal enabledelayedexpansion
 
 REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
+if %ERRORLEVEL% NEQ 0 (
+    echo [X] Failed to change directory to "%~dp0SerienJunkie".
+    goto :handle_error
+)
 echo Starting Binge Watching...
 
 REM === Required Python modules ===
@@ -12,8 +16,7 @@ REM === Check Python installation ===
 python --version >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [X] Python is not installed or not added to PATH.
-    pause
-    exit /b 1
+    goto :handle_error
 )
 
 REM === Check and install missing modules ===
@@ -35,8 +38,7 @@ if not "!missing_modules!"=="" (
     python -m pip install !missing_modules!
     if !ERRORLEVEL! NEQ 0 (
         echo [X] Failed to install modules. Please install manually.
-        pause
-        exit /b 1
+        goto :handle_error
     )
 ) else (
     echo [=] All dependencies satisfied.
@@ -90,11 +92,10 @@ if /i "%USE_TOR%"=="true" (
         netstat -an | find "9050" >nul
         if %ERRORLEVEL% EQU 0 (
             set /a waitcount+=1
-            if !waitcount! LSS 55 goto waittorclose
-            echo [X] Port 9050 did not become available after kill. Aborted execution.
-            pause
-            exit /b 1
-        )
+        if !waitcount! LSS 55 goto waittorclose
+        echo [X] Port 9050 did not become available after kill. Aborted execution.
+        goto :handle_error
+    )
     )
     
     REM Start Tor now
@@ -109,8 +110,7 @@ if /i "%USE_TOR%"=="true" (
         set /a waitcount+=1
         if !waitcount! LSS 30 goto waittorstart
         echo [X] port 9050 was not opened!
-        pause
-        exit /b 1
+        goto :handle_error
     )
     echo [+] Tor started successfully.
 )
@@ -135,10 +135,15 @@ if %EXITCODE% EQU 0 (
     endlocal & exit /b 0
 ) else (
     echo [X] BingeWatcher exited with code %EXITCODE%.
-    pause
     if "%USE_TOR%"=="true" (
         echo [i] Cleaning up Tor process...
         taskkill /IM tor.exe /F >nul 2>&1
     )
-    endlocal & exit /b %EXITCODE%
+    goto :handle_error
 )
+
+:handle_error
+echo.
+echo [!] Script aborted. Review the messages above.
+pause
+endlocal & exit /b 1
