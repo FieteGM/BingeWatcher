@@ -1261,6 +1261,61 @@ def play_episodes_loop(
                 pass
             # ----------------------------------------------------------------
 
+            # --- LIVE SERIES SKIP UPDATES ----------------------------------
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_start_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        current_end = get_intro_skip_end_seconds(ser)
+                        set_intro_skip_seconds(ser, secs, current_end)
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_end_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        current_start = get_intro_skip_seconds(ser)
+                        set_intro_skip_seconds(ser, current_start, secs)
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_end_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        set_end_skip_seconds(ser, secs)
+            except Exception:
+                pass
+            # ----------------------------------------------------------------
+
             if flags.get("quit"):
                 should_quit = True
                 break
