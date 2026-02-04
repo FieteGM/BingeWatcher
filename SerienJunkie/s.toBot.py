@@ -205,6 +205,87 @@ def get_intro_fingerprint_entry(series: str, season: int) -> Optional[Dict[str, 
     return entry_raw
 
 
+def set_intro_fingerprint_entry(
+    series: str,
+    season: int,
+    full_intro_duration_seconds: int,
+    fingerprint: str,
+    fingerprint_duration: int,
+) -> bool:
+    try:
+        intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
+        intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+        entry: Dict[str, Any] = intro_fingerprints.get(intro_fingerprint_key, {})
+
+        intro_duration_value: int = max(0, int(full_intro_duration_seconds))
+        fingerprint_value: str = str(fingerprint or "").strip()
+        fingerprint_duration_value: int = max(0, int(fingerprint_duration))
+
+        if intro_duration_value > 0:
+            entry["fullIntroDurationSeconds"] = intro_duration_value
+        else:
+            entry.pop("fullIntroDurationSeconds", None)
+
+        if fingerprint_value:
+            entry["fingerprint"] = fingerprint_value
+            if fingerprint_duration_value > 0:
+                entry["fingerprintDuration"] = fingerprint_duration_value
+            else:
+                entry.pop("fingerprintDuration", None)
+        else:
+            entry.pop("fingerprint", None)
+            entry.pop("fingerprintDuration", None)
+
+        if not entry:
+            intro_fingerprints.pop(intro_fingerprint_key, None)
+        else:
+            intro_fingerprints[intro_fingerprint_key] = entry
+
+        with open(INTRO_FINGERPRINTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(intro_fingerprints, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logging.error(f"Intro fingerprint could not be saved: {e}")
+        return False
+
+
+def merge_intro_fingerprint_entry(
+    series: str,
+    season: int,
+    full_intro_duration_seconds: Optional[int],
+    fingerprint: Optional[str],
+    fingerprint_duration: Optional[int],
+) -> bool:
+    entry: Optional[Dict[str, Any]] = get_intro_fingerprint_entry(series, season)
+    current_duration: int = int((entry or {}).get("fullIntroDurationSeconds", 0) or 0)
+    current_fingerprint: str = str((entry or {}).get("fingerprint", "") or "")
+    current_fp_duration: int = int((entry or {}).get("fingerprintDuration", 0) or 0)
+
+    next_duration: int = (
+        int(full_intro_duration_seconds)
+        if full_intro_duration_seconds is not None
+        else current_duration
+    )
+    next_fingerprint: str = (
+        str(fingerprint or "")
+        if fingerprint is not None
+        else current_fingerprint
+    )
+    next_fp_duration: int = (
+        int(fingerprint_duration)
+        if fingerprint_duration is not None
+        else current_fp_duration
+    )
+
+    return set_intro_fingerprint_entry(
+        series=series,
+        season=season,
+        full_intro_duration_seconds=next_duration,
+        fingerprint=next_fingerprint,
+        fingerprint_duration=next_fp_duration,
+    )
+
+
 def read_intro_fingerprint_match(driver: webdriver.Firefox) -> Optional[str]:
     try:
         driver.switch_to.default_content()
@@ -1273,6 +1354,89 @@ def play_episodes_loop(
             # --- LIVE SERIES SKIP UPDATES ----------------------------------
             try:
                 skip_settings_changed = False
+                upd = read_localstorage_value(driver, "bw_intro_duration_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=secs,
+                            fingerprint=None,
+                            fingerprint_duration=None,
+                        ):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_fp_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
+                    fingerprint_raw = data.get("fingerprint", "")
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
+                    fingerprint_value = str(fingerprint_raw or "").strip()
+
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=None,
+                            fingerprint=fingerprint_value,
+                            fingerprint_duration=None,
+                        ):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_fp_duration_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=None,
+                            fingerprint=None,
+                            fingerprint_duration=secs,
+                        ):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
                 upd = read_localstorage_value(driver, "bw_end_update")
                 if upd:
                     data = json.loads(upd)
@@ -2267,6 +2431,7 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
     """Erstellt HTML für die Sidebar mit Streaming-Anbieter-Tabs."""
     if settings is None:
         settings = {}
+    intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
     # Gruppiere Serien nach Anbietern
     provider_series = {}
     for series_name, data in db.items():
@@ -2306,11 +2471,16 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             position = int(data.get("position", 0))
             ts_val = float(data.get("timestamp", 0))
             end_skip_val = int(data.get("end_skip", 0))
+            intro_fingerprint_key: str = build_intro_fingerprint_key(series_name, season)
+            intro_entry: Dict[str, Any] = intro_fingerprints.get(intro_fingerprint_key, {})
+            intro_duration_val = int(intro_entry.get("fullIntroDurationSeconds", 0) or 0)
+            intro_fp_val = _html.escape(str(intro_entry.get("fingerprint", "") or ""), quote=True)
+            intro_fp_duration_val = int(intro_entry.get("fingerprintDuration", 0) or 0)
             safe_name = _html.escape(series_name, quote=True)
 
             series_items.append(f"""
                 <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}" data-provider="{provider_id}"
-                     data-end-skip="{end_skip_val}"
+                     data-end-skip="{end_skip_val}" data-intro-duration="{intro_duration_val}" data-intro-fingerprint="{intro_fp_val}" data-intro-fp-duration="{intro_fp_duration_val}"
                      style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
                             border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
                     
@@ -2326,9 +2496,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
                         <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:8px;border-radius:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;margin-left:8px;transition:all .2s ease;hover:background:rgba(239,68,68,.2);" title="Remove series">X</div>
                     </div>
                     <div style="display:flex;justify-content:flex-end;margin-top:12px;">
-                        <button class="bw-series-settings" data-series="{safe_name}" data-end-skip="{end_skip_val}"
+                        <button class="bw-series-settings" data-series="{safe_name}" data-season="{season}" data-end-skip="{end_skip_val}" data-intro-duration="{intro_duration_val}" data-intro-fingerprint="{intro_fp_val}" data-intro-fp-duration="{intro_fp_duration_val}"
                                 style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;font-size:11px;cursor:pointer;transition:all .2s ease;">
-                            End Skip
+                            Skip Settings
                         </button>
                     </div>
                 </div>
@@ -2572,8 +2742,26 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 box-shadow: 0 4px 12px rgba(59,130,246,.15);
               }
               
+              #bingeSidebar .bw-intro-duration,
+              #bingeSidebar .bw-intro-fingerprint,
+              #bingeSidebar .bw-intro-fp-duration,
               #bingeSidebar .bw-end {
                 transition: all .2s ease !important;
+              }
+
+              #bingeSidebar .bw-intro-duration:focus,
+              #bingeSidebar .bw-intro-fingerprint:focus,
+              #bingeSidebar .bw-intro-fp-duration:focus {
+                transform: scale(1.02);
+                box-shadow: 0 0 0 2px rgba(59,130,246,.3);
+                border-color: rgba(59,130,246,.6) !important;
+              }
+              
+              #bingeSidebar .bw-intro-duration:hover,
+              #bingeSidebar .bw-intro-fingerprint:hover,
+              #bingeSidebar .bw-intro-fp-duration:hover {
+                border-color: rgba(59,130,246,.5) !important;
+                background: rgba(59,130,246,.15) !important;
               }
 
               #bingeSidebar .bw-end:focus {
@@ -2588,10 +2776,12 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               }
               
               /* Input field animations */
+              #bingeSidebar .bw-intro-section,
               #bingeSidebar .bw-end-section {
                 transition: all .2s ease;
               }
 
+              #bingeSidebar .bw-intro-section:hover,
               #bingeSidebar .bw-end-section:hover {
                 transform: translateX(2px);
               }
@@ -2816,7 +3006,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               d.addEventListener('input', (e)=>{ if (e.target && e.target.id==='bwSearch') onFilter(); });
               d.addEventListener('change', (e)=>{ if (e.target && e.target.id==='bwSort') onSort(); });
 
-              const openSeriesSkipPanel = (seriesName, endSkip) => {
+              const openSeriesSkipPanel = (seriesName, seasonValue, introDuration, introFingerprint, introFingerprintDuration, endSkip) => {
                 const existingPanel = document.getElementById('bwSeriesSkipPanel');
                 if (existingPanel) {
                   existingPanel.remove();
@@ -2844,6 +3034,39 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   boxShadow: '0 10px 30px rgba(0,0,0,.4)',
                 });
 
+                const introSectionHtml = `
+                  <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <div style="width:12px;height:12px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">&gt;</div>
+                      <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip (Season ${seasonValue})</span>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Intro Duration (s)</label>
+                        <input class="bw-intro-duration" data-series="${seriesName}" data-season="${seasonValue}" type="number" min="0" value="${introDuration}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
+                               placeholder="0" title="Intro duration in seconds"/>
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Fingerprint</label>
+                        <input class="bw-intro-fingerprint" data-series="${seriesName}" data-season="${seasonValue}" type="text" value="${introFingerprint || ''}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;transition:all .2s ease;outline:none;"
+                               placeholder="Optional fingerprint string" title="Fingerprint string"/>
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Fingerprint Duration (s)</label>
+                        <input class="bw-intro-fp-duration" data-series="${seriesName}" data-season="${seasonValue}" type="number" min="0" value="${introFingerprintDuration}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
+                               placeholder="0" title="Fingerprint duration in seconds"/>
+                      </div>
+                    </div>
+                  </div>
+                `;
+
                 const endSectionHtml = allowEnd ? `
                   <div class="bw-end-section" style="display:flex;flex-direction:column;gap:6px;">
                     <div style="display:flex;align-items:center;gap:6px;">
@@ -2868,6 +3091,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     <button id="bwCloseSeriesSkip" style="background:transparent;border:0;color:#94a3b8;cursor:pointer;font-size:18px;">X</button>
                   </div>
                   <div style="display:flex;flex-direction:column;gap:10px;">
+                    ${introSectionHtml}
                     ${endSectionHtml}
                   </div>
                 `;
@@ -2913,6 +3137,42 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
                 if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
                 panel.addEventListener('input', (ev) => {
+                  const introDurationInput = ev.target.closest && ev.target.closest('input.bw-intro-duration');
+                  if (introDurationInput) {
+                    const series = introDurationInput.dataset.series; if (!series) return;
+                    const season = parseInt(introDurationInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_duration_' + series + '_' + season;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(introDurationInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_duration_update', JSON.stringify({ series, season, seconds }));
+                    }, 600);
+                  }
+
+                  const introFingerprintInput = ev.target.closest && ev.target.closest('input.bw-intro-fingerprint');
+                  if (introFingerprintInput) {
+                    const series = introFingerprintInput.dataset.series; if (!series) return;
+                    const season = parseInt(introFingerprintInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_fp_' + series + '_' + season;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const fingerprint = String(introFingerprintInput.value || '').trim();
+                      localStorage.setItem('bw_intro_fp_update', JSON.stringify({ series, season, fingerprint }));
+                    }, 600);
+                  }
+
+                  const introFingerprintDurationInput = ev.target.closest && ev.target.closest('input.bw-intro-fp-duration');
+                  if (introFingerprintDurationInput) {
+                    const series = introFingerprintDurationInput.dataset.series; if (!series) return;
+                    const season = parseInt(introFingerprintDurationInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_fp_duration_' + series + '_' + season;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(introFingerprintDurationInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_fp_duration_update', JSON.stringify({ series, season, seconds }));
+                    }, 600);
+                  }
+
                   const endInput = ev.target.closest && ev.target.closest('input.bw-end');
                   if (endInput) {
                     const series = endInput.dataset.series; if (!series) return;
@@ -3127,9 +3387,20 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 const skipPanelButton = c('.bw-series-settings');
                 if (skipPanelButton) {
                   const seriesName = skipPanelButton.getAttribute('data-series');
+                  const seasonValue = parseInt(skipPanelButton.getAttribute('data-season') || '0', 10) || 0;
+                  const introDuration = parseInt(skipPanelButton.getAttribute('data-intro-duration') || '0', 10) || 0;
+                  const introFingerprint = skipPanelButton.getAttribute('data-intro-fingerprint') || '';
+                  const introFingerprintDuration = parseInt(skipPanelButton.getAttribute('data-intro-fp-duration') || '0', 10) || 0;
                   const endSkip = parseInt(skipPanelButton.getAttribute('data-end-skip') || '0', 10) || 0;
                   if (seriesName) {
-                    openSeriesSkipPanel(seriesName, endSkip);
+                    openSeriesSkipPanel(
+                      seriesName,
+                      seasonValue,
+                      introDuration,
+                      introFingerprint,
+                      introFingerprintDuration,
+                      endSkip
+                    );
                   }
                   return;
                 }
@@ -3138,9 +3409,14 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                  if (item) {
                      // Check if click originated from input field or delete button - don't trigger navigation
                      const clickedEndInput = e.target.closest && e.target.closest('input.bw-end');
+                     const clickedIntroInput = e.target.closest && (
+                       e.target.closest('input.bw-intro-duration') ||
+                       e.target.closest('input.bw-intro-fingerprint') ||
+                       e.target.closest('input.bw-intro-fp-duration')
+                     );
                      const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
                      const clickedSkipSettings = e.target.closest && e.target.closest('.bw-series-settings');
-                     if (clickedEndInput || clickedDelete || clickedSkipSettings) return;
+                     if (clickedEndInput || clickedIntroInput || clickedDelete || clickedSkipSettings) return;
                     
                     if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
                     localStorage.setItem('bw_nav_inflight','1');
@@ -3372,6 +3648,104 @@ def main() -> None:
 
                 # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
                 try:
+                    upd = read_localstorage_value(driver, "bw_intro_duration_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=secs,
+                                fingerprint=None,
+                                fingerprint_duration=None,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_fp_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        fingerprint_raw = data.get("fingerprint", "")
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        fingerprint_value = str(fingerprint_raw or "").strip()
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=None,
+                                fingerprint=fingerprint_value,
+                                fingerprint_duration=None,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_fp_duration_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=None,
+                                fingerprint=None,
+                                fingerprint_duration=secs,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
                     upd = read_localstorage_value(driver, "bw_end_update")
                     if upd:
                         data = json.loads(upd)

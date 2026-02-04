@@ -103,7 +103,8 @@ like `<series>_s<season>`, for example `one_piece_s07`:
 If `fingerprint` is omitted but `fullIntroDurationSeconds` is present, the
 player will skip the first N seconds at the start of the episode. If a
 fingerprint is present, an external matcher can signal a match by writing the
-matched key into `localStorage` as `bw_intro_fp_match`.
+matched key into `localStorage` as `bw_intro_fp_match`. You can also edit these
+values per series/season from the in-app “Skip Settings” panel.
 
 ## Data Files
 
@@ -115,7 +116,7 @@ matched key into `localStorage` as `bw_intro_fp_match`.
 
 - **Series list** with last watched time.
 - **Provider tabs** to filter s.to vs. aniworld.to.
-- **Per-series controls** for end skip windows.
+- **Per-series controls** for intro duration/fingerprint and end skip windows.
 - **Quick actions**: skip episode, open settings, quit.
 
 ## Troubleshooting
