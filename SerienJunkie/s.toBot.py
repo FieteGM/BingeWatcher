@@ -30,6 +30,7 @@ GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
 
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, "progress.json")
 SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
+INTRO_FINGERPRINTS_FILE = os.path.join(SCRIPT_DIR, "intro_fingerprints.json")
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -173,6 +174,90 @@ def norm_series_key(s: str) -> str:
         return _html.unescape(str(s or "")).strip()
     except Exception:
         return str(s or "").strip()
+
+
+def build_intro_fingerprint_key(series: str, season: int) -> str:
+    safe_series: str = re.sub(r"[^a-z0-9_]+", "_", (series or "").lower())
+    safe_series = safe_series.strip("_")
+    season_value: int = max(0, int(season))
+    return f"{safe_series}_s{season_value:02d}"
+
+
+def load_intro_fingerprints() -> Dict[str, Dict[str, Any]]:
+    try:
+        if os.path.exists(INTRO_FINGERPRINTS_FILE):
+            with open(INTRO_FINGERPRINTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        return {}
+    except Exception as e:
+        logging.error(f"Intro fingerprints could not be loaded: {e}")
+        return {}
+
+
+def get_intro_fingerprint_entry(series: str, season: int) -> Optional[Dict[str, Any]]:
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+    intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
+    entry_raw: Optional[Dict[str, Any]] = intro_fingerprints.get(intro_fingerprint_key)
+    if not isinstance(entry_raw, dict):
+        return None
+    return entry_raw
+
+
+def read_intro_fingerprint_match(driver: webdriver.Firefox) -> Optional[str]:
+    try:
+        driver.switch_to.default_content()
+        value = driver.execute_script(
+            """
+            let r = localStorage.getItem('bw_intro_fp_match');
+            if (r) localStorage.removeItem('bw_intro_fp_match');
+            return r;
+        """
+        )
+        return value if isinstance(value, str) else None
+    except Exception:
+        return None
+
+
+def maybe_apply_intro_skip(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    intro_skip_applied: bool,
+) -> bool:
+    if intro_skip_applied:
+        return True
+
+    entry = get_intro_fingerprint_entry(series, season)
+    if not entry:
+        return intro_skip_applied
+
+    intro_duration_raw: int = int(entry.get("fullIntroDurationSeconds", 0) or 0)
+    intro_duration_seconds: int = max(0, intro_duration_raw)
+    if intro_duration_seconds <= 0:
+        return intro_skip_applied
+
+    fingerprint_value: str = str(entry.get("fingerprint", "") or "").strip()
+    if not fingerprint_value:
+        seek_to_position(driver, intro_duration_seconds)
+        return True
+
+    matched_key = read_intro_fingerprint_match(driver)
+    if matched_key:
+        intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+        if matched_key == intro_fingerprint_key:
+            current_time_value: float = float(
+                driver.execute_script(
+                    "return document.querySelector('video')?.currentTime || 0;"
+                )
+                or 0
+            )
+            target_time: int = int(current_time_value + intro_duration_seconds)
+            seek_to_position(driver, target_time)
+            return True
+
+    return intro_skip_applied
 
 
 # === BROWSER HANDLING --------------------------- ===
@@ -877,6 +962,7 @@ def play_episodes_loop(
         vol = settings["volume"]
         fullscreen_attempted: bool = False
         end_skip_applied: bool = False
+        intro_skip_applied: bool = False
 
         print(
             f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
@@ -915,6 +1001,14 @@ def play_episodes_loop(
         
         if position and position > 0:
             seek_to_position(driver, position)
+            intro_skip_applied = True
+        else:
+            intro_skip_applied = maybe_apply_intro_skip(
+                driver=driver,
+                series=series,
+                season=current_season,
+                intro_skip_applied=intro_skip_applied,
+            )
         position = 0
 
         recovery_tries = 0
@@ -1312,6 +1406,13 @@ def play_episodes_loop(
                     fullscreen_attempted = True
                 except Exception:
                     pass
+
+            intro_skip_applied = maybe_apply_intro_skip(
+                driver=driver,
+                series=series,
+                season=current_season,
+                intro_skip_applied=intro_skip_applied,
+            )
 
             time.sleep(1.0)
 

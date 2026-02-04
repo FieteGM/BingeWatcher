@@ -15,6 +15,7 @@ Automated binge-watching helper for **s.to** and **aniworld.to** with progress
 - **Multi-provider support**: s.to and aniworld.to with automatic provider
   detection.
 - **Progress tracking**: resume by series/season/episode with saved timestamps.
+- **Optional intro skip**: fingerprint-configured per season.
 - **End screen skip**: jump past credits/outro if configured.
 - **Auto fullscreen**: multiple fallback strategies for stubborn players.
 - **Sidebar UI**: search, sort, quick actions, and settings panel.
@@ -84,9 +85,30 @@ Important keys:
 - `playbackRate` (number)
 - `volume` (number, `0.0`–`1.0`)
 
+### Intro fingerprints (optional)
+
+To enable intro skipping per season, create `intro_fingerprints.json` with keys
+like `<series>_s<season>`, for example `one_piece_s07`:
+
+```json
+{
+  "one_piece_s07": {
+    "fingerprint": "A_LONG_FP_STRING",
+    "fingerprintDuration": 10,
+    "fullIntroDurationSeconds": 145
+  }
+}
+```
+
+If `fingerprint` is omitted but `fullIntroDurationSeconds` is present, the
+player will skip the first N seconds at the start of the episode. If a
+fingerprint is present, an external matcher can signal a match by writing the
+matched key into `localStorage` as `bw_intro_fp_match`.
+
 ## Data Files
 
 - `progress.json`: persisted progress by series.
+- `intro_fingerprints.json`: optional intro fingerprint configuration.
 - `settings.json`: app settings.
 
 ## Sidebar Highlights
@@ -111,6 +133,7 @@ SerienJunkie/
 ├── README.md               # This file
 ├── geckodriver.exe         # Firefox WebDriver
 ├── progress.json           # Progress database (auto-created)
+├── intro_fingerprints.json # Optional intro fingerprint data
 └── user.BingeWatcher/      # Firefox profile (auto-created)
 ```
 
