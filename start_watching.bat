@@ -42,6 +42,28 @@ if not "!missing_modules!"=="" (
     echo [=] All dependencies satisfied.
 )
 
+REM === Check for Chromaprint (fpcalc) ===
+where fpcalc >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [-] Chromaprint (fpcalc) not found. Attempting to install...
+    where winget >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        winget install --id Chromaprint -e --silent >nul 2>&1
+    )
+    where choco >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        choco install chromaprint -y >nul 2>&1
+    )
+    where fpcalc >nul 2>&1
+    if %ERRORLEVEL% NEQ 0 (
+        echo [!] Chromaprint could not be installed automatically. Please install fpcalc manually.
+    ) else (
+        echo [+] Chromaprint installed successfully.
+    )
+) else (
+    echo [+] Chromaprint (fpcalc) already installed.
+)
+
 REM === Check Tor setting from settings.json ===
 set "USE_TOR=false"
 for /f "usebackq delims=" %%a in (`powershell -NoProfile -Command "try { $json = Get-Content -Raw 'settings.json' | ConvertFrom-Json; $value = $json.useTorProxy; if ($value -is [string]) { $value = $value.Trim().ToLower() -eq 'true' } else { $value = [bool]$value }; if ($value) { 'true' } else { 'false' } } catch { 'false' }"`) do (

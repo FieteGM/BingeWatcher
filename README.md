@@ -128,6 +128,8 @@ MP3 after processing.
 ## Troubleshooting
 
 - **GeckoDriver not found**: Ensure `geckodriver.exe` sits next to `s.toBot.py`.
+- **Chromaprint (fpcalc) missing**: Install Chromaprint so the MP3 fingerprint
+  generator can run (`fpcalc` must be on PATH).
 - **Video not playing**: Refresh the page or press Space to play.
 - **Sidebar missing**: Reload; some pages block injection until fully loaded.
 

@@ -2523,6 +2523,7 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
     if settings is None:
         settings = {}
     intro_upload_files: List[str] = list_intro_upload_files()
+    fpcalc_available: bool = _resolve_fpcalc_binary() is not None
     intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
     # Gruppiere Serien nach Anbietern
     provider_series = {}
@@ -2604,8 +2605,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
     
     # Kombiniere alles
     upload_meta = _html.escape(json.dumps(intro_upload_files), quote=True)
+    fpcalc_meta = "1" if fpcalc_available else "0"
     tabs_container = f'''
-        <div id="bwUploadFiles" data-files="{upload_meta}" style="display:none;"></div>
+        <div id="bwUploadFiles" data-files="{upload_meta}" data-fpcalc="{fpcalc_meta}" style="display:none;"></div>
         <div class="bw-provider-tabs" style="display:flex;gap:2px;margin-bottom:12px;">
             {"".join(tabs_html)}
         </div>
@@ -3297,6 +3299,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   if (!selectEl) return;
                   const filesNode = document.getElementById('bwUploadFiles');
                   if (!filesNode) return;
+                  const fpcalcAvailable = filesNode.getAttribute('data-fpcalc') === '1';
                   let files = [];
                   try {
                     const raw = filesNode.getAttribute('data-files') || '[]';
@@ -3305,14 +3308,25 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   selectEl.innerHTML = '';
                   const placeholder = document.createElement('option');
                   placeholder.value = '';
-                  placeholder.textContent = files.length ? 'Select MP3 file' : 'No MP3 files found';
+                  if (!fpcalcAvailable) {
+                    placeholder.textContent = 'Chromaprint not installed';
+                  } else {
+                    placeholder.textContent = files.length ? 'Select MP3 file' : 'No MP3 files found';
+                  }
                   selectEl.appendChild(placeholder);
-                  files.forEach(file => {
-                    const opt = document.createElement('option');
-                    opt.value = String(file);
-                    opt.textContent = String(file);
-                    selectEl.appendChild(opt);
-                  });
+                  if (fpcalcAvailable) {
+                    files.forEach(file => {
+                      const opt = document.createElement('option');
+                      opt.value = String(file);
+                      opt.textContent = String(file);
+                      selectEl.appendChild(opt);
+                    });
+                  }
+                  selectEl.disabled = !fpcalcAvailable;
+                  const statusEl = panel.querySelector('.bw-intro-upload-status');
+                  if (statusEl && !fpcalcAvailable) {
+                    statusEl.textContent = 'Chromaprint (fpcalc) is not installed.';
+                  }
                 };
 
                 fillUploadFiles();
@@ -3321,10 +3335,16 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 if (uploadButton) {
                   uploadButton.addEventListener('click', (ev) => {
                     ev.preventDefault();
+                    const filesNode = document.getElementById('bwUploadFiles');
+                    const fpcalcAvailable = filesNode && filesNode.getAttribute('data-fpcalc') === '1';
                     const series = uploadButton.dataset.series; if (!series) return;
                     const season = parseInt(uploadButton.dataset.season || '0', 10) || 0;
                     const selectEl = panel.querySelector('select.bw-intro-file-select');
                     const statusEl = panel.querySelector('.bw-intro-upload-status');
+                    if (!fpcalcAvailable) {
+                      if (statusEl) statusEl.textContent = 'Install Chromaprint (fpcalc) first.';
+                      return;
+                    }
                     if (!selectEl) return;
                     const filename = String(selectEl.value || '');
                     if (!filename) {
