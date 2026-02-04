@@ -3,8 +3,11 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from selenium import webdriver
@@ -31,6 +34,7 @@ GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, "progress.json")
 SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 INTRO_FINGERPRINTS_FILE = os.path.join(SCRIPT_DIR, "intro_fingerprints.json")
+INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -284,6 +288,93 @@ def merge_intro_fingerprint_entry(
         fingerprint=next_fingerprint,
         fingerprint_duration=next_fp_duration,
     )
+
+
+def _resolve_fpcalc_binary() -> Optional[str]:
+    fpcalc_binary: Optional[str] = shutil.which("fpcalc")
+    if fpcalc_binary:
+        return fpcalc_binary
+    return shutil.which("fpcalc.exe")
+
+
+def extract_fingerprint_from_mp3(mp3_bytes: bytes) -> Optional[Dict[str, Any]]:
+    fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
+    if not fpcalc_binary:
+        logging.error("fpcalc binary not found. Please install Chromaprint.")
+        return None
+
+    temp_file = None
+    try:
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".mp3",
+            delete=False,
+            dir=SCRIPT_DIR,
+        )
+        temp_file.write(mp3_bytes)
+        temp_file.flush()
+        temp_file.close()
+
+        result = subprocess.run(
+            [fpcalc_binary, "-json", temp_file.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logging.error(
+                f"fpcalc failed: {result.stderr.strip() or 'unknown error'}"
+            )
+            return None
+
+        payload = json.loads(result.stdout or "{}")
+        if not isinstance(payload, dict):
+            return None
+
+        fingerprint_value: str = str(payload.get("fingerprint", "") or "").strip()
+        duration_value: int = int(payload.get("duration", 0) or 0)
+        if not fingerprint_value:
+            return None
+
+        return {
+            "fingerprint": fingerprint_value,
+            "fingerprintDuration": duration_value,
+        }
+    except Exception as e:
+        logging.error(f"Fingerprint extraction failed: {e}")
+        return None
+    finally:
+        try:
+            if temp_file is not None and os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+        except Exception:
+            pass
+
+
+def list_intro_upload_files() -> List[str]:
+    try:
+        os.makedirs(INTRO_UPLOAD_DIR, exist_ok=True)
+        files = [
+            name
+            for name in os.listdir(INTRO_UPLOAD_DIR)
+            if name.lower().endswith(".mp3")
+        ]
+        return sorted(files)
+    except Exception:
+        return []
+
+
+def resolve_intro_upload_path(filename: str) -> Optional[str]:
+    safe_name: str = os.path.basename(filename or "")
+    if not safe_name:
+        return None
+    candidate: str = os.path.join(INTRO_UPLOAD_DIR, safe_name)
+    try:
+        if os.path.exists(candidate):
+            return candidate
+    except Exception:
+        return None
+    return None
 
 
 def read_intro_fingerprint_match(driver: webdriver.Firefox) -> Optional[str]:
@@ -2431,6 +2522,7 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
     """Erstellt HTML für die Sidebar mit Streaming-Anbieter-Tabs."""
     if settings is None:
         settings = {}
+    intro_upload_files: List[str] = list_intro_upload_files()
     intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
     # Gruppiere Serien nach Anbietern
     provider_series = {}
@@ -2511,7 +2603,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
         ''')
     
     # Kombiniere alles
+    upload_meta = _html.escape(json.dumps(intro_upload_files), quote=True)
     tabs_container = f'''
+        <div id="bwUploadFiles" data-files="{upload_meta}" style="display:none;"></div>
         <div class="bw-provider-tabs" style="display:flex;gap:2px;margin-bottom:12px;">
             {"".join(tabs_html)}
         </div>
@@ -3064,6 +3158,19 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                                placeholder="0" title="Fingerprint duration in seconds"/>
                       </div>
                     </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:6px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Select MP3 (intro_uploads)</label>
+                        <select class="bw-intro-file-select" data-series="${seriesName}" data-season="${seasonValue}"
+                                style="width:100%;padding:8px;border-radius:8px;border:1px dashed rgba(59,130,246,.35);background:rgba(59,130,246,.08);color:#e2e8f0;font-size:11px;transition:all .2s ease;outline:none;">
+                        </select>
+                        <button class="bw-intro-file-apply" data-series="${seriesName}" data-season="${seasonValue}"
+                                style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;font-size:11px;cursor:pointer;">
+                          Generate Fingerprint
+                        </button>
+                        <div class="bw-intro-upload-status" data-series="${seriesName}" data-season="${seasonValue}" style="font-size:10px;color:#94a3b8;">Drop MP3 files into intro_uploads/.</div>
+                      </div>
+                    </div>
                   </div>
                 `;
 
@@ -3184,6 +3291,96 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     }, 600);
                   }
                 });
+
+                const fillUploadFiles = () => {
+                  const selectEl = panel.querySelector('select.bw-intro-file-select');
+                  if (!selectEl) return;
+                  const filesNode = document.getElementById('bwUploadFiles');
+                  if (!filesNode) return;
+                  let files = [];
+                  try {
+                    const raw = filesNode.getAttribute('data-files') || '[]';
+                    files = JSON.parse(raw);
+                  } catch(_) {}
+                  selectEl.innerHTML = '';
+                  const placeholder = document.createElement('option');
+                  placeholder.value = '';
+                  placeholder.textContent = files.length ? 'Select MP3 file' : 'No MP3 files found';
+                  selectEl.appendChild(placeholder);
+                  files.forEach(file => {
+                    const opt = document.createElement('option');
+                    opt.value = String(file);
+                    opt.textContent = String(file);
+                    selectEl.appendChild(opt);
+                  });
+                };
+
+                fillUploadFiles();
+
+                const uploadButton = panel.querySelector('button.bw-intro-file-apply');
+                if (uploadButton) {
+                  uploadButton.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    const series = uploadButton.dataset.series; if (!series) return;
+                    const season = parseInt(uploadButton.dataset.season || '0', 10) || 0;
+                    const selectEl = panel.querySelector('select.bw-intro-file-select');
+                    const statusEl = panel.querySelector('.bw-intro-upload-status');
+                    if (!selectEl) return;
+                    const filename = String(selectEl.value || '');
+                    if (!filename) {
+                      if (statusEl) statusEl.textContent = 'Select an MP3 first.';
+                      return;
+                    }
+                    localStorage.setItem('bw_intro_upload', JSON.stringify({
+                      series,
+                      season,
+                      filename
+                    }));
+                    if (statusEl) statusEl.textContent = 'Processing MP3...';
+                  });
+                }
+
+                const uploadPollInterval = setInterval(() => {
+                  const statusEl = panel.querySelector('.bw-intro-upload-status');
+                  if (!statusEl) return;
+                  const series = statusEl.getAttribute('data-series');
+                  const season = parseInt(statusEl.getAttribute('data-season') || '0', 10) || 0;
+                  if (!series || season <= 0) return;
+
+                  let resultRaw = null;
+                  let errorRaw = null;
+                  try { resultRaw = localStorage.getItem('bw_intro_upload_result'); } catch(_) {}
+                  try { errorRaw = localStorage.getItem('bw_intro_upload_error'); } catch(_) {}
+
+                  if (resultRaw) {
+                    try {
+                      const result = JSON.parse(resultRaw);
+                      if (result && result.series === series && result.season === season) {
+                        localStorage.removeItem('bw_intro_upload_result');
+                        const fpInput = panel.querySelector('input.bw-intro-fingerprint');
+                        const fpDurationInput = panel.querySelector('input.bw-intro-fp-duration');
+                        if (fpInput) fpInput.value = String(result.fingerprint || '');
+                        if (fpDurationInput) fpDurationInput.value = String(result.fingerprintDuration || 0);
+                        fillUploadFiles();
+                        statusEl.textContent = 'Fingerprint saved. MP3 removed.';
+                      }
+                    } catch(_) {}
+                  }
+
+                  if (errorRaw) {
+                    try {
+                      const result = JSON.parse(errorRaw);
+                      if (result && result.series === series && result.season === season) {
+                        localStorage.removeItem('bw_intro_upload_error');
+                        fillUploadFiles();
+                        statusEl.textContent = 'Upload failed. Please try again.';
+                      }
+                    } catch(_) {}
+                  }
+                }, 900);
+
+                const stopUploadPoll = () => clearInterval(uploadPollInterval);
+                if (closeButton) closeButton.addEventListener('click', stopUploadPoll);
               };
 
               d.addEventListener('click', (e)=>{
@@ -3412,7 +3609,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                      const clickedIntroInput = e.target.closest && (
                        e.target.closest('input.bw-intro-duration') ||
                        e.target.closest('input.bw-intro-fingerprint') ||
-                       e.target.closest('input.bw-intro-fp-duration')
+                       e.target.closest('input.bw-intro-fp-duration') ||
+                       e.target.closest('select.bw-intro-file-select') ||
+                       e.target.closest('button.bw-intro-file-apply')
                      );
                      const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
                      const clickedSkipSettings = e.target.closest && e.target.closest('.bw-series-settings');
@@ -3647,6 +3846,85 @@ def main() -> None:
                     pass
 
                 # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_upload")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        filename_raw = data.get("filename", "")
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        filename_value: str = str(filename_raw or "").strip()
+                        file_path: Optional[str] = resolve_intro_upload_path(
+                            filename_value
+                        )
+
+                        if ser and season_value > 0 and file_path:
+                            fingerprint_entry = None
+                            try:
+                                with open(file_path, "rb") as f:
+                                    mp3_bytes = f.read()
+                                fingerprint_entry = extract_fingerprint_from_mp3(
+                                    mp3_bytes
+                                )
+                            except Exception:
+                                fingerprint_entry = None
+
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
+
+                            if fingerprint_entry:
+                                merge_intro_fingerprint_entry(
+                                    series=ser,
+                                    season=season_value,
+                                    full_intro_duration_seconds=None,
+                                    fingerprint=fingerprint_entry.get("fingerprint"),
+                                    fingerprint_duration=fingerprint_entry.get(
+                                        "fingerprintDuration"
+                                    ),
+                                )
+                                driver.execute_script(
+                                    "localStorage.setItem('bw_intro_upload_result', arguments[0]);",
+                                    json.dumps(
+                                        {
+                                            "series": ser,
+                                            "season": season_value,
+                                            "fingerprint": fingerprint_entry.get(
+                                                "fingerprint"
+                                            ),
+                                            "fingerprintDuration": fingerprint_entry.get(
+                                                "fingerprintDuration"
+                                            ),
+                                            "filename": filename_value,
+                                        }
+                                    ),
+                                )
+                            else:
+                                driver.execute_script(
+                                    "localStorage.setItem('bw_intro_upload_error', arguments[0]);",
+                                    json.dumps(
+                                        {
+                                            "series": ser,
+                                            "season": season_value,
+                                            "filename": filename_value,
+                                        }
+                                    ),
+                                )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
                 try:
                     upd = read_localstorage_value(driver, "bw_intro_duration_update")
                     if upd:

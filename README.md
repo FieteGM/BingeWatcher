@@ -106,6 +106,12 @@ fingerprint is present, an external matcher can signal a match by writing the
 matched key into `localStorage` as `bw_intro_fp_match`. You can also edit these
 values per series/season from the in-app “Skip Settings” panel.
 
+To generate a fingerprint without editing JSON, drop your MP3 into
+`SerienJunkie/intro_uploads/`, open the per-series “Skip Settings” panel, and
+select the file in the “Select MP3 (intro_uploads)” picker. The app will
+generate the fingerprint, save it into `intro_fingerprints.json`, and delete the
+MP3 after processing.
+
 ## Data Files
 
 - `progress.json`: persisted progress by series.
@@ -135,6 +141,7 @@ SerienJunkie/
 ├── geckodriver.exe         # Firefox WebDriver
 ├── progress.json           # Progress database (auto-created)
 ├── intro_fingerprints.json # Optional intro fingerprint data
+├── intro_uploads/          # Optional MP3 drop folder
 └── user.BingeWatcher/      # Firefox profile (auto-created)
 ```
 
