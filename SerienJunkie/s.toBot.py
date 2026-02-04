@@ -256,14 +256,36 @@ def smart_skip_intro(driver, series: str, season: int = 1):
                 "return document.querySelector('video')?.readyState > 0;"
             )
         )
-        
+
+        progress_entry = load_progress().get(series, {})
+        has_custom_intro = (
+            "intro_skip_start" in progress_entry
+            or "intro_skip_end" in progress_entry
+        )
+        if has_custom_intro:
+            intro_start = get_intro_skip_seconds(series)
+            intro_end = get_intro_skip_end_seconds(series)
+            if intro_end > intro_start:
+                current_time = driver.execute_script(
+                    "return document.querySelector('video')?.currentTime || 0;"
+                )
+                if intro_start <= current_time <= intro_end:
+                    driver.execute_script(
+                        "document.querySelector('video').currentTime = arguments[0];",
+                        intro_end,
+                    )
+            return
+
         # Get intro times
         intro_start, intro_end = get_default_intro_times(series, season)
-        
+
         # Check if we should skip intro
         if detect_intro_start(driver, series, season):
             logging.info(f"Intro detected for {series}, skipping to {intro_end} seconds")
-            driver.execute_script(f"document.querySelector('video').currentTime = {intro_end};")
+            driver.execute_script(
+                "document.querySelector('video').currentTime = arguments[0];",
+                intro_end,
+            )
         else:
             logging.info(f"No intro detected for {series}, continuing normally")
             
@@ -601,7 +623,7 @@ def _hard_fullscreen_click(driver) -> bool:
 
 
 # === SETTINGS HANDLING --------------------------- ===
-def get_settings(driver):
+def get_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     file_s = load_settings_file()
     ls_s = read_settings(driver) or {}
 
@@ -647,7 +669,7 @@ def save_settings_file(settings: Dict[str, Any]) -> bool:
         return False
 
 
-def sync_settings_to_localstorage(driver):
+def sync_settings_to_localstorage(driver: webdriver.Firefox) -> None:
     """Schreibt Datei-Settings in localStorage, falls dort leer/nicht gesetzt."""
     try:
         driver.switch_to.default_content()
@@ -680,6 +702,25 @@ def _default_settings() -> Dict[str, Any]:
         "playbackRate": 1.0,
         "volume": 1.0,
     }
+
+
+def read_localstorage_value(
+    driver: webdriver.Firefox,
+    key: str,
+) -> Optional[str]:
+    try:
+        driver.switch_to.default_content()
+        value = driver.execute_script(
+            """
+            let r = localStorage.getItem(arguments[0]);
+            if (r) localStorage.removeItem(arguments[0]);
+            return r;
+        """,
+            key,
+        )
+        return value if isinstance(value, str) else None
+    except Exception:
+        return None
 
 
 # === NAVIGATION HANDLING --------------------------- ===
@@ -759,6 +800,79 @@ def navigate_to_episode(driver, series, season, episode, db, provider="s.to"):
 
     inject_sidebar(driver, db); clear_nav_lock(driver)
     return a_series or series, a_season or season, a_episode or episode, a_provider or provider
+
+
+def resolve_next_episode_aniworld(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    episode: int,
+) -> Optional[tuple[int, int]]:
+    try:
+        provider_info = STREAMING_PROVIDERS["aniworld.to"]
+        series_slug = slugify_series(series)
+        next_episode = episode + 1
+        target_url = provider_info["episode_url_template"].format(
+            series=series_slug,
+            season=season,
+            episode=next_episode,
+        )
+        driver.get(target_url)
+        arm_window_close_guard(driver)
+        time.sleep(2)
+
+        current_url = driver.current_url or ""
+        parsed = parse_episode_info(current_url)
+        if parsed:
+            p_series, p_season, p_episode, _ = parsed
+            if (
+                p_series == series_slug
+                and p_season == season
+                and p_episode == next_episode
+            ):
+                return season, next_episode
+
+        base_series_url = (
+            f"{provider_info['base_url']}anime/stream/{series_slug}"
+        )
+        season_url = f"{base_series_url}/staffel-{season}"
+        if current_url.startswith(season_url) and "/episode-" not in current_url:
+            next_season = season + 1
+            next_season_url = provider_info["episode_url_template"].format(
+                series=series_slug,
+                season=next_season,
+                episode=1,
+            )
+            driver.get(next_season_url)
+            arm_window_close_guard(driver)
+            time.sleep(2)
+
+            next_url = driver.current_url or ""
+            parsed_next = parse_episode_info(next_url)
+            if parsed_next:
+                n_series, n_season, n_episode, _ = parsed_next
+                if (
+                    n_series == series_slug
+                    and n_season == next_season
+                    and n_episode == 1
+                ):
+                    return next_season, 1
+
+            next_season_base_url = f"{base_series_url}/staffel-{next_season}"
+            if (
+                next_url.startswith(base_series_url)
+                and "/staffel-" not in next_url
+            ):
+                return None
+            if (
+                next_url.startswith(next_season_base_url)
+                and "/episode-" not in next_url
+            ):
+                return None
+
+        return None
+    except Exception:
+        return None
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -890,7 +1004,14 @@ def popout_player_iframe(driver) -> bool:
         return False
 
 
-def play_episodes_loop(driver, series, season, episode, position=0, provider="s.to"):
+def play_episodes_loop(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    episode: int,
+    position: int = 0,
+    provider: str = "s.to",
+) -> None:
     global should_quit
     current_episode = episode
     current_season = season
@@ -908,6 +1029,8 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
         auto_next = settings["autoNext"]
         rate = settings["playbackRate"]
         vol = settings["volume"]
+        fullscreen_attempted: bool = False
+        end_skip_applied: bool = False
 
         print(
             f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
@@ -1009,8 +1132,8 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
             _hide_sidebar(driver, True)
             ensure_video_context(driver)
             time.sleep(0.1)
-            
-            ok = enable_fullscreen(driver)
+            ok = ensure_fullscreen_for_episode(driver)
+            fullscreen_attempted = True
             
             if not ok and os.getenv("BW_POPOUT_IFRAME", "false").lower() in {
                 "1",
@@ -1022,7 +1145,8 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                     _hide_sidebar(driver, True)
                     ensure_video_context(driver)
                     time.sleep(0.1)
-                    ok = enable_fullscreen(driver)
+                    ok = ensure_fullscreen_for_episode(driver)
+                    fullscreen_attempted = True
 
         try:
             for _ in range(8):
@@ -1158,13 +1282,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
 
             # --- LIVE SETTINGS UPDATE ---------------------------------------
             try:
-                raw = driver.execute_script(
-                    """
-                    let r = localStorage.getItem('bw_settings_update');
-                    if (r) localStorage.removeItem('bw_settings_update');
-                    return r;
-                """
-                )
+                raw = read_localstorage_value(driver, "bw_settings_update")
                 if raw:
                     upd = json.loads(raw)
                     # Datei persistieren
@@ -1224,7 +1342,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                         )
                     except Exception:
                         pass
-                    
+
                     # UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
                     try:
                         html = build_items_html(load_progress(), settings)
@@ -1234,8 +1352,77 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                         )
                     except Exception:
                         pass
+                ensure_video_context(driver)
             except Exception:
                 pass
+            # ----------------------------------------------------------------
+
+            # --- LIVE SERIES SKIP UPDATES ----------------------------------
+            try:
+                skip_settings_changed = False
+                upd = read_localstorage_value(driver, "bw_intro_start_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        current_end = get_intro_skip_end_seconds(ser)
+                        if set_intro_skip_seconds(ser, secs, current_end):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_end_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        current_start = get_intro_skip_seconds(ser)
+                        if set_intro_skip_seconds(ser, current_start, secs):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_end_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    secs_raw = data.get("seconds", 0)
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        secs = max(0, int(float(secs_raw)))
+                    except Exception:
+                        secs = 0
+
+                    if ser:
+                        if set_end_skip_seconds(ser, secs):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+            if skip_settings_changed:
+                try:
+                    html = build_items_html(load_progress(), settings)
+                    driver.execute_script(
+                        "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                        html,
+                    )
+                except Exception:
+                    pass
             # ----------------------------------------------------------------
 
             if flags.get("quit"):
@@ -1294,6 +1481,10 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                 except Exception:
                     pass
 
+            if not ensure_video_context(driver):
+                time.sleep(0.2)
+                continue
+
             remaining_time = driver.execute_script(
                 """
                 const v = document.querySelector('video');
@@ -1309,7 +1500,7 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                 last_save = now
 
             # End-Screen-Skip Logik
-            if auto_skip_end:
+            if auto_skip_end and not end_skip_applied:
                 end_skip_seconds = get_end_skip_seconds(series)
                 if end_skip_seconds > 0 and remaining_time <= end_skip_seconds:
                     try:
@@ -1317,15 +1508,14 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
                             """
                             const v = document.querySelector('video');
                             if (v && isFinite(v.duration)) {
-                                const skipTo = Math.max(0, v.duration - arguments[0]);
-                                if (v.currentTime < skipTo) {
-                                    v.currentTime = skipTo;
-                                    try { v.play().catch(()=>{}); } catch(_) {}
-                                }
+                                const skipTo = Math.max(0, v.duration - 1);
+                                v.currentTime = skipTo;
+                                try { v.play().catch(()=>{}); } catch(_) {}
                             }
                         """,
                             end_skip_seconds,
                         )
+                        end_skip_applied = True
                     except Exception:
                         pass
                     # Wenn wir das Ende überspringen, warten wir kurz und brechen dann ab
@@ -1334,6 +1524,13 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
             
             if remaining_time <= 3:
                 break
+
+            if auto_fs and not HEADLESS and not fullscreen_attempted:
+                try:
+                    ensure_fullscreen_for_episode(driver)
+                    fullscreen_attempted = True
+                except Exception:
+                    pass
 
             time.sleep(1.0)
 
@@ -1353,6 +1550,19 @@ def play_episodes_loop(driver, series, season, episode, position=0, provider="s.
 
         if not auto_next:
             return
+
+        if current_provider == "aniworld.to":
+            next_episode = resolve_next_episode_aniworld(
+                driver,
+                series,
+                current_season,
+                current_episode,
+            )
+            if not next_episode:
+                return
+            current_season, current_episode = next_episode
+            position = get_intro_skip_seconds(series) if auto_skip else 0
+            continue
 
         # Spezielle Behandlung für One Piece: Verhindere Sprung zu Staffel 11
         if is_one_piece and current_season == 1:
@@ -1685,7 +1895,48 @@ def pause_video(driver):
         pass
 
 
-def enable_fullscreen(driver):
+def ensure_fullscreen_for_episode(driver: webdriver.Firefox) -> bool:
+    try:
+        driver.switch_to.default_content()
+        if not is_document_focused(driver):
+            return False
+        if _is_fullscreen(driver):
+            exit_fullscreen(driver)
+            time.sleep(0.2)
+        ensure_video_context(driver)
+        ok = enable_fullscreen(driver)
+        if ok:
+            return True
+        try:
+            v = driver.find_element(By.TAG_NAME, "video")
+            ActionChains(driver).move_to_element(v).double_click().perform()
+            time.sleep(0.2)
+            return _is_fullscreen(driver)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def is_document_focused(driver: webdriver.Firefox) -> bool:
+    try:
+        driver.switch_to.default_content()
+        return bool(
+            driver.execute_script(
+                """
+                try {
+                  const isVisible = document.visibilityState === 'visible';
+                  const hasFocus = document.hasFocus && document.hasFocus();
+                  return isVisible && hasFocus;
+                } catch(_) { return false; }
+            """
+            )
+        )
+    except Exception:
+        return False
+
+
+def enable_fullscreen(driver: webdriver.Firefox) -> bool:
     """
     Verbesserte Vollbild-Aktivierung mit mehreren Fallback-Strategien.
     Berücksichtigt User-Gesture-Requirements und verschiedene Player-APIs.
@@ -1913,62 +2164,63 @@ def enable_fullscreen(driver):
             pass
 
         # 8.5. Player-spezifische APIs für s.to
-        try:
-            driver.execute_script(
-                """
-                // JWPlayer API
-                if (window.jwplayer && window.jwplayer().getContainer) {
-                    try {
-                        const player = window.jwplayer();
-                        if (player && typeof player.setFullscreen === 'function') {
-                            player.setFullscreen(true);
-                            return;
-                        }
-                    } catch (e) {}
-                }
-                
-                // Video.js API
-                if (window.videojs) {
-                    try {
-                        const players = window.videojs.getPlayers();
-                        for (const id in players) {
-                            const player = players[id];
-                            if (player && typeof player.requestFullscreen === 'function') {
-                                player.requestFullscreen();
+        if is_document_focused(driver):
+            try:
+                driver.execute_script(
+                    """
+                    // JWPlayer API
+                    if (window.jwplayer && window.jwplayer().getContainer) {
+                        try {
+                            const player = window.jwplayer();
+                            if (player && typeof player.setFullscreen === 'function') {
+                                player.setFullscreen(true);
                                 return;
                             }
-                        }
-                    } catch (e) {}
-                }
-                
-                // Plyr API
-                if (window.Plyr) {
-                    try {
-                        const players = document.querySelectorAll('[data-plyr]');
-                        players.forEach(el => {
-                            if (el.plyr && typeof el.plyr.fullscreen.enter === 'function') {
-                                el.plyr.fullscreen.enter();
+                        } catch (e) {}
+                    }
+                    
+                    // Video.js API
+                    if (window.videojs) {
+                        try {
+                            const players = window.videojs.getPlayers();
+                            for (const id in players) {
+                                const player = players[id];
+                                if (player && typeof player.requestFullscreen === 'function') {
+                                    player.requestFullscreen();
+                                    return;
+                                }
                             }
-                        });
-                    } catch (e) {}
-                }
-                
-                // Shaka Player API
-                if (window.shaka && window.shaka.Player) {
-                    try {
-                        const video = document.querySelector('video');
-                        if (video && video.shakaPlayer) {
-                            video.shakaPlayer.getControls().getFullscreenButton().click();
-                        }
-                    } catch (e) {}
-                }
-            """
-            )
-            time.sleep(0.2)
-            if _is_fullscreen(driver):
-                return True
-        except Exception:
-            pass
+                        } catch (e) {}
+                    }
+                    
+                    // Plyr API
+                    if (window.Plyr) {
+                        try {
+                            const players = document.querySelectorAll('[data-plyr]');
+                            players.forEach(el => {
+                                if (el.plyr && typeof el.plyr.fullscreen.enter === 'function') {
+                                    el.plyr.fullscreen.enter();
+                                }
+                            });
+                        } catch (e) {}
+                    }
+                    
+                    // Shaka Player API
+                    if (window.shaka && window.shaka.Player) {
+                        try {
+                            const video = document.querySelector('video');
+                            if (video && video.shakaPlayer) {
+                                video.shakaPlayer.getControls().getFullscreenButton().click();
+                            }
+                        } catch (e) {}
+                    }
+                """
+                )
+                time.sleep(0.2)
+                if _is_fullscreen(driver):
+                    return True
+            except Exception:
+                pass
 
         # 9. Browser-Fenster-Vollbild als Fallback
         try:
@@ -2110,6 +2362,7 @@ def get_cookie(driver, name):
 # === SIDEBAR FUNCTIONS --------------------------- ===
 def read_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
     try:
+        driver.switch_to.default_content()
         data = driver.execute_script(
             """
             try {
@@ -3011,6 +3264,29 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       p.remove();
                     });
                   }
+                  const saveButton = document.getElementById('bwSaveSettings');
+                  if (saveButton) {
+                    saveButton.addEventListener('click', (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const next = {
+                        autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
+                        autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
+                        autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
+                        autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
+                        playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
+                        volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
+                      };
+                      localStorage.setItem('bw_settings', JSON.stringify(next));
+                      localStorage.setItem('bw_settings_update', JSON.stringify(next));
+
+                      try {
+                        localStorage.setItem('bw_ui_update_needed', '1');
+                      } catch(_) {}
+
+                      p.remove();
+                    });
+                  }
                   
                   try {
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
@@ -3037,26 +3313,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'BUTTON' || ev.target.closest('label')) {
                       return;
                     }
-                                         if (ev.target && ev.target.id==='bwSaveSettings') {
-                                              const next = {
-                          autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
-                          autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
-                          autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
-                          autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
-                          playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
-                          volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('bwOptVolume')?.value || '1')))
-                        };
-                       localStorage.setItem('bw_settings', JSON.stringify(next));
-                       localStorage.setItem('bw_settings_update', JSON.stringify(next));
-                       
-                       // UI sofort aktualisieren, um neue Eingabefelder anzuzeigen/verstecken
-                       try {
-                         // Trigger UI update by setting a flag
-                         localStorage.setItem('bw_ui_update_needed', '1');
-                       } catch(_) {}
-                       
-                       p.remove();
-                     }
                   });
                   return;
                 }
@@ -3324,13 +3580,7 @@ def main() -> None:
 
                 # Handle settings updates (from settings panel)
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_settings_update');
-                        if (r) localStorage.removeItem('bw_settings_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_settings_update")
                     if upd:
                         data = json.loads(upd)
                         save_settings_file(data)
@@ -3347,13 +3597,7 @@ def main() -> None:
 
                 # Handle intro start updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_intro_start_update');
-                        if (r) localStorage.removeItem('bw_intro_start_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_intro_start_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
@@ -3380,13 +3624,7 @@ def main() -> None:
 
                 # Handle intro end updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_intro_end_update');
-                        if (r) localStorage.removeItem('bw_intro_end_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_intro_end_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
@@ -3413,13 +3651,7 @@ def main() -> None:
 
                 # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_end_update');
-                        if (r) localStorage.removeItem('bw_end_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_end_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
