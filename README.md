@@ -1,7 +1,7 @@
 # BingeWatcher
 
 Automated binge-watching helper for **s.to** and **aniworld.to** with progress
-tracking, intro/end skipping, and a modern sidebar UI for quick navigation.
+ tracking, end-screen skipping, and a modern sidebar UI for quick navigation.
 
 > **Strict disclaimer**: I do **not** support, endorse, or encourage the use of
 > this script. It is published **for educational review only**. Do **not** use
@@ -15,7 +15,6 @@ tracking, intro/end skipping, and a modern sidebar UI for quick navigation.
 - **Multi-provider support**: s.to and aniworld.to with automatic provider
   detection.
 - **Progress tracking**: resume by series/season/episode with saved timestamps.
-- **Smart intro skip**: per-series intro start/end times.
 - **End screen skip**: jump past credits/outro if configured.
 - **Auto fullscreen**: multiple fallback strategies for stubborn players.
 - **Sidebar UI**: search, sort, quick actions, and settings panel.
@@ -66,7 +65,6 @@ The script will:
 | --- | --- | --- |
 | `BW_HEADLESS` | `false` | Run Firefox headless (`true/false`). |
 | `BW_START_URL` | `https://s.to/` | Start URL (provider homepage). |
-| `BW_INTRO_SKIP` | `80` | Default intro skip (seconds). |
 | `BW_MAX_RETRIES` | `3` | Navigation retry count. |
 | `BW_WAIT_TIMEOUT` | `25` | Page load wait timeout. |
 | `BW_PROGRESS_INTERVAL` | `5` | Progress save interval (seconds). |
@@ -81,7 +79,6 @@ Important keys:
 
 - `useTorProxy` (boolean)
 - `autoFullscreen` (boolean)
-- `autoSkipIntro` (boolean)
 - `autoSkipEndScreen` (boolean)
 - `autoNext` (boolean)
 - `playbackRate` (number)
@@ -90,14 +87,13 @@ Important keys:
 ## Data Files
 
 - `progress.json`: persisted progress by series.
-- `intro_times.json`: optional default intro windows by season.
 - `settings.json`: app settings.
 
 ## Sidebar Highlights
 
 - **Series list** with last watched time.
 - **Provider tabs** to filter s.to vs. aniworld.to.
-- **Per-series controls** for intro and end skip windows.
+- **Per-series controls** for end skip windows.
 - **Quick actions**: skip episode, open settings, quit.
 
 ## Troubleshooting
@@ -115,7 +111,6 @@ SerienJunkie/
 ├── README.md               # This file
 ├── geckodriver.exe         # Firefox WebDriver
 ├── progress.json           # Progress database (auto-created)
-├── intro_times.json        # Optional intro presets
 └── user.BingeWatcher/      # Firefox profile (auto-created)
 ```
 
