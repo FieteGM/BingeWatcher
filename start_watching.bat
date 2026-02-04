@@ -1,13 +1,17 @@
 @echo off
 setlocal enabledelayedexpansion
+set "BW_LOG=%~dp0SerienJunkie\bw_startup.log"
+echo [BingeWatcher] Starting... > "%BW_LOG%"
 
 REM === Navigate to the script directory ===
 cd /d "%~dp0SerienJunkie"
 if %ERRORLEVEL% NEQ 0 (
     echo [X] Failed to change directory to "%~dp0SerienJunkie".
+    echo [X] Failed to change directory to "%~dp0SerienJunkie". >> "%BW_LOG%"
     goto :handle_error
 )
 echo Starting Binge Watching...
+echo [=] Working directory: %CD% >> "%BW_LOG%"
 
 REM === Required Python modules ===
 set modules=selenium configparser
@@ -16,6 +20,7 @@ REM === Check Python installation ===
 python --version >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [X] Python is not installed or not added to PATH.
+    echo [X] Python is not installed or not added to PATH. >> "%BW_LOG%"
     goto :handle_error
 )
 
@@ -38,16 +43,19 @@ if not "!missing_modules!"=="" (
     python -m pip install !missing_modules!
     if !ERRORLEVEL! NEQ 0 (
         echo [X] Failed to install modules. Please install manually.
+        echo [X] Failed to install modules. Please install manually. >> "%BW_LOG%"
         goto :handle_error
     )
 ) else (
     echo [=] All dependencies satisfied.
+    echo [=] All dependencies satisfied. >> "%BW_LOG%"
 )
 
 REM === Check for Chromaprint (fpcalc) ===
 where fpcalc >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Chromaprint (fpcalc) not found. Attempting to install...
+    echo [-] Chromaprint (fpcalc) not found. Attempting to install... >> "%BW_LOG%"
     where winget >nul 2>&1
     if %ERRORLEVEL% EQU 0 (
         winget install --id Chromaprint -e --silent >nul 2>&1
@@ -59,11 +67,14 @@ if %ERRORLEVEL% NEQ 0 (
     where fpcalc >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
         echo [!] Chromaprint could not be installed automatically. Please install fpcalc manually.
+        echo [!] Chromaprint could not be installed automatically. Please install fpcalc manually. >> "%BW_LOG%"
     ) else (
         echo [+] Chromaprint installed successfully.
+        echo [+] Chromaprint installed successfully. >> "%BW_LOG%"
     )
 ) else (
     echo [+] Chromaprint (fpcalc) already installed.
+    echo [+] Chromaprint (fpcalc) already installed. >> "%BW_LOG%"
 )
 
 REM === Check Tor setting from settings.json ===
@@ -94,6 +105,7 @@ if /i "%USE_TOR%"=="true" (
             set /a waitcount+=1
         if !waitcount! LSS 55 goto waittorclose
         echo [X] Port 9050 did not become available after kill. Aborted execution.
+        echo [X] Port 9050 did not become available after kill. Aborted execution. >> "%BW_LOG%"
         goto :handle_error
     )
     )
@@ -110,15 +122,18 @@ if /i "%USE_TOR%"=="true" (
         set /a waitcount+=1
         if !waitcount! LSS 30 goto waittorstart
         echo [X] port 9050 was not opened!
+        echo [X] port 9050 was not opened! >> "%BW_LOG%"
         goto :handle_error
     )
     echo [+] Tor started successfully.
+    echo [+] Tor started successfully. >> "%BW_LOG%"
 )
 
 REM === Start Python Script ===
 set BW_DEBUG=1
 python s.toBot.py
 set EXITCODE=%ERRORLEVEL%
+echo [i] Python exit code: %EXITCODE% >> "%BW_LOG%"
 
 REM Immer pausieren, damit du die letzte Zeile siehst
 echo.
@@ -135,6 +150,7 @@ if %EXITCODE% EQU 0 (
     endlocal & exit /b 0
 ) else (
     echo [X] BingeWatcher exited with code %EXITCODE%.
+    echo [X] BingeWatcher exited with code %EXITCODE%. >> "%BW_LOG%"
     if "%USE_TOR%"=="true" (
         echo [i] Cleaning up Tor process...
         taskkill /IM tor.exe /F >nul 2>&1
@@ -145,5 +161,7 @@ if %EXITCODE% EQU 0 (
 :handle_error
 echo.
 echo [!] Script aborted. Review the messages above.
+echo [!] Script aborted. Review the messages above. >> "%BW_LOG%"
+echo [i] Log saved to: %BW_LOG%
 pause
 endlocal & exit /b 1
