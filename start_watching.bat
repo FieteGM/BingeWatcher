@@ -109,11 +109,13 @@ if /i "%USE_TOR%"=="true" (
         netstat -an | find "9050" >nul
         if %ERRORLEVEL% EQU 0 (
             set /a waitcount+=1
-        if !waitcount! LSS 55 goto waittorclose
-        echo [X] Port 9050 did not become available after kill. Aborted execution.
-        echo [X] Port 9050 did not become available after kill. Aborted execution. >> "%BW_LOG%"
-        goto :handle_error
-    )
+            if !waitcount! LSS 55 (
+                goto waittorclose
+            )
+            echo [X] Port 9050 did not become available after kill. Aborted execution.
+            echo [X] Port 9050 did not become available after kill. Aborted execution. >> "%BW_LOG%"
+            goto :handle_error
+        )
     )
     
     REM Start Tor now
