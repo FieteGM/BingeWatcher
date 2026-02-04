@@ -42,7 +42,7 @@ for %%m in (%modules%) do (
     )
 )
 
-if not "!missing_modules!"=="" (
+if defined missing_modules (
     echo Installing missing modules:!missing_modules!
     python -m pip install --upgrade pip >nul 2>&1
     python -m pip install !missing_modules!
