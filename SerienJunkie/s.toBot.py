@@ -1030,6 +1030,7 @@ def play_episodes_loop(
         rate = settings["playbackRate"]
         vol = settings["volume"]
         fullscreen_attempted: bool = False
+        end_skip_applied: bool = False
 
         print(
             f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
@@ -1480,6 +1481,10 @@ def play_episodes_loop(
                 except Exception:
                     pass
 
+            if not ensure_video_context(driver):
+                time.sleep(0.2)
+                continue
+
             remaining_time = driver.execute_script(
                 """
                 const v = document.querySelector('video');
@@ -1495,7 +1500,7 @@ def play_episodes_loop(
                 last_save = now
 
             # End-Screen-Skip Logik
-            if auto_skip_end:
+            if auto_skip_end and not end_skip_applied:
                 end_skip_seconds = get_end_skip_seconds(series)
                 if end_skip_seconds > 0 and remaining_time <= end_skip_seconds:
                     try:
@@ -1503,15 +1508,14 @@ def play_episodes_loop(
                             """
                             const v = document.querySelector('video');
                             if (v && isFinite(v.duration)) {
-                                const skipTo = Math.max(0, v.duration - arguments[0]);
-                                if (v.currentTime < skipTo) {
-                                    v.currentTime = skipTo;
-                                    try { v.play().catch(()=>{}); } catch(_) {}
-                                }
+                                const skipTo = Math.max(0, v.duration - 1);
+                                v.currentTime = skipTo;
+                                try { v.play().catch(()=>{}); } catch(_) {}
                             }
                         """,
                             end_skip_seconds,
                         )
+                        end_skip_applied = True
                     except Exception:
                         pass
                     # Wenn wir das Ende überspringen, warten wir kurz und brechen dann ab
