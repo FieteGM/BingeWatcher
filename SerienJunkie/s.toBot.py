@@ -256,14 +256,36 @@ def smart_skip_intro(driver, series: str, season: int = 1):
                 "return document.querySelector('video')?.readyState > 0;"
             )
         )
-        
+
+        progress_entry = load_progress().get(series, {})
+        has_custom_intro = (
+            "intro_skip_start" in progress_entry
+            or "intro_skip_end" in progress_entry
+        )
+        if has_custom_intro:
+            intro_start = get_intro_skip_seconds(series)
+            intro_end = get_intro_skip_end_seconds(series)
+            if intro_end > intro_start:
+                current_time = driver.execute_script(
+                    "return document.querySelector('video')?.currentTime || 0;"
+                )
+                if intro_start <= current_time <= intro_end:
+                    driver.execute_script(
+                        "document.querySelector('video').currentTime = arguments[0];",
+                        intro_end,
+                    )
+            return
+
         # Get intro times
         intro_start, intro_end = get_default_intro_times(series, season)
-        
+
         # Check if we should skip intro
         if detect_intro_start(driver, series, season):
             logging.info(f"Intro detected for {series}, skipping to {intro_end} seconds")
-            driver.execute_script(f"document.querySelector('video').currentTime = {intro_end};")
+            driver.execute_script(
+                "document.querySelector('video').currentTime = arguments[0];",
+                intro_end,
+            )
         else:
             logging.info(f"No intro detected for {series}, continuing normally")
             
@@ -778,6 +800,79 @@ def navigate_to_episode(driver, series, season, episode, db, provider="s.to"):
 
     inject_sidebar(driver, db); clear_nav_lock(driver)
     return a_series or series, a_season or season, a_episode or episode, a_provider or provider
+
+
+def resolve_next_episode_aniworld(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    episode: int,
+) -> Optional[tuple[int, int]]:
+    try:
+        provider_info = STREAMING_PROVIDERS["aniworld.to"]
+        series_slug = slugify_series(series)
+        next_episode = episode + 1
+        target_url = provider_info["episode_url_template"].format(
+            series=series_slug,
+            season=season,
+            episode=next_episode,
+        )
+        driver.get(target_url)
+        arm_window_close_guard(driver)
+        time.sleep(2)
+
+        current_url = driver.current_url or ""
+        parsed = parse_episode_info(current_url)
+        if parsed:
+            p_series, p_season, p_episode, _ = parsed
+            if (
+                p_series == series_slug
+                and p_season == season
+                and p_episode == next_episode
+            ):
+                return season, next_episode
+
+        base_series_url = (
+            f"{provider_info['base_url']}anime/stream/{series_slug}"
+        )
+        season_url = f"{base_series_url}/staffel-{season}"
+        if current_url.startswith(season_url) and "/episode-" not in current_url:
+            next_season = season + 1
+            next_season_url = provider_info["episode_url_template"].format(
+                series=series_slug,
+                season=next_season,
+                episode=1,
+            )
+            driver.get(next_season_url)
+            arm_window_close_guard(driver)
+            time.sleep(2)
+
+            next_url = driver.current_url or ""
+            parsed_next = parse_episode_info(next_url)
+            if parsed_next:
+                n_series, n_season, n_episode, _ = parsed_next
+                if (
+                    n_series == series_slug
+                    and n_season == next_season
+                    and n_episode == 1
+                ):
+                    return next_season, 1
+
+            next_season_base_url = f"{base_series_url}/staffel-{next_season}"
+            if (
+                next_url.startswith(base_series_url)
+                and "/staffel-" not in next_url
+            ):
+                return None
+            if (
+                next_url.startswith(next_season_base_url)
+                and "/episode-" not in next_url
+            ):
+                return None
+
+        return None
+    except Exception:
+        return None
 
 
 def find_and_switch_to_video_frame(driver, timeout=12) -> bool:
@@ -1438,6 +1533,19 @@ def play_episodes_loop(
 
         if not auto_next:
             return
+
+        if current_provider == "aniworld.to":
+            next_episode = resolve_next_episode_aniworld(
+                driver,
+                series,
+                current_season,
+                current_episode,
+            )
+            if not next_episode:
+                return
+            current_season, current_episode = next_episode
+            position = get_intro_skip_seconds(series) if auto_skip else 0
+            continue
 
         # Spezielle Behandlung für One Piece: Verhindere Sprung zu Staffel 11
         if is_one_piece and current_season == 1:
