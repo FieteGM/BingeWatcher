@@ -3417,13 +3417,7 @@ def main() -> None:
 
                 # Handle intro start updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_intro_start_update');
-                        if (r) localStorage.removeItem('bw_intro_start_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_intro_start_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
@@ -3450,13 +3444,7 @@ def main() -> None:
 
                 # Handle intro end updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_intro_end_update');
-                        if (r) localStorage.removeItem('bw_intro_end_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_intro_end_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
@@ -3483,13 +3471,7 @@ def main() -> None:
 
                 # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
                 try:
-                    upd = driver.execute_script(
-                        """
-                        let r = localStorage.getItem('bw_end_update');
-                        if (r) localStorage.removeItem('bw_end_update');
-                        return r;
-                    """
-                    )
+                    upd = read_localstorage_value(driver, "bw_end_update")
                     if upd:
                         data = json.loads(upd)
                         ser_raw = data.get("series", "")
