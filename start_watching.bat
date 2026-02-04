@@ -42,18 +42,22 @@ for %%m in (%modules%) do (
     )
 )
 
-if defined missing_modules (
-    echo Installing missing modules:!missing_modules!
+if "%missing_modules%" NEQ "" (
+    set "missing_modules=%missing_modules:~1%"
+)
+
+if "%missing_modules%"=="" (
+    echo [=] All dependencies satisfied.
+    echo [=] All dependencies satisfied. >> "%BW_LOG%"
+) else (
+    echo Installing missing modules:%missing_modules%
     python -m pip install --upgrade pip >nul 2>&1
-    python -m pip install !missing_modules!
-    if !ERRORLEVEL! NEQ 0 (
+    python -m pip install %missing_modules%
+    if %ERRORLEVEL% NEQ 0 (
         echo [X] Failed to install modules. Please install manually.
         echo [X] Failed to install modules. Please install manually. >> "%BW_LOG%"
         goto :handle_error
     )
-) else (
-    echo [=] All dependencies satisfied.
-    echo [=] All dependencies satisfied. >> "%BW_LOG%"
 )
 
 REM === Check for Chromaprint (fpcalc) ===
