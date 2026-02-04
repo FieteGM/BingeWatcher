@@ -1358,6 +1358,7 @@ def play_episodes_loop(
 
             # --- LIVE SERIES SKIP UPDATES ----------------------------------
             try:
+                skip_settings_changed = False
                 upd = read_localstorage_value(driver, "bw_intro_start_update")
                 if upd:
                     data = json.loads(upd)
@@ -1371,7 +1372,8 @@ def play_episodes_loop(
 
                     if ser:
                         current_end = get_intro_skip_end_seconds(ser)
-                        set_intro_skip_seconds(ser, secs, current_end)
+                        if set_intro_skip_seconds(ser, secs, current_end):
+                            skip_settings_changed = True
             except Exception:
                 pass
 
@@ -1389,7 +1391,8 @@ def play_episodes_loop(
 
                     if ser:
                         current_start = get_intro_skip_seconds(ser)
-                        set_intro_skip_seconds(ser, current_start, secs)
+                        if set_intro_skip_seconds(ser, current_start, secs):
+                            skip_settings_changed = True
             except Exception:
                 pass
 
@@ -1406,9 +1409,19 @@ def play_episodes_loop(
                         secs = 0
 
                     if ser:
-                        set_end_skip_seconds(ser, secs)
+                        if set_end_skip_seconds(ser, secs):
+                            skip_settings_changed = True
             except Exception:
                 pass
+            if skip_settings_changed:
+                try:
+                    html = build_items_html(load_progress(), settings)
+                    driver.execute_script(
+                        "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                        html,
+                    )
+                except Exception:
+                    pass
             # ----------------------------------------------------------------
 
             if flags.get("quit"):
