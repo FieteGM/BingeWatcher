@@ -1,5 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
+if "%BW_KEEP_SHELL%"=="" (
+    set "BW_KEEP_SHELL=1"
+    cmd /k ""%~f0""
+    exit /b 0
+)
 set "BW_LOG=%~dp0SerienJunkie\bw_startup.log"
 echo [BingeWatcher] Starting... > "%BW_LOG%"
 
@@ -52,6 +57,7 @@ if not "!missing_modules!"=="" (
 )
 
 REM === Check for Chromaprint (fpcalc) ===
+echo [i] Checking Chromaprint (fpcalc)... >> "%BW_LOG%"
 where fpcalc >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [-] Chromaprint (fpcalc) not found. Attempting to install...
