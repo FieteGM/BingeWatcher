@@ -24,8 +24,8 @@ set modules=selenium configparser
 REM === Check Python installation ===
 python --version >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [X] Python is not installed or not added to PATH.
-    echo [X] Python is not installed or not added to PATH. >> "%BW_LOG%"
+    echo [X] Python is missing or absent from PATH.
+    echo [X] Python is missing or absent from PATH. >> "%BW_LOG%"
     goto :handle_error
 )
 
@@ -64,8 +64,8 @@ REM === Check for Chromaprint (fpcalc) ===
 echo [i] Checking Chromaprint (fpcalc)... >> "%BW_LOG%"
 where fpcalc >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo [-] Chromaprint (fpcalc) not found. Attempting to install...
-    echo [-] Chromaprint (fpcalc) not found. Attempting to install... >> "%BW_LOG%"
+    echo [-] Chromaprint (fpcalc) missing. Attempting to install...
+    echo [-] Chromaprint (fpcalc) missing. Attempting to install... >> "%BW_LOG%"
     where winget >nul 2>&1
     if %ERRORLEVEL% EQU 0 (
         winget install --id Chromaprint -e --silent >nul 2>&1
@@ -76,8 +76,8 @@ if %ERRORLEVEL% NEQ 0 (
     )
     where fpcalc >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
-        echo [!] Chromaprint could not be installed automatically. Please install fpcalc manually.
-        echo [!] Chromaprint could not be installed automatically. Please install fpcalc manually. >> "%BW_LOG%"
+        echo [!] Chromaprint couldn't be installed automatically. Please install fpcalc manually.
+        echo [!] Chromaprint couldn't be installed automatically. Please install fpcalc manually. >> "%BW_LOG%"
     ) else (
         echo [+] Chromaprint installed successfully.
         echo [+] Chromaprint installed successfully. >> "%BW_LOG%"
@@ -116,8 +116,8 @@ if /i "%USE_TOR%"=="true" (
             if !waitcount! LSS 55 (
                 goto waittorclose
             )
-            echo [X] Port 9050 did not become available after kill. Aborted execution.
-            echo [X] Port 9050 did not become available after kill. Aborted execution. >> "%BW_LOG%"
+            echo [X] Port 9050 never became available after kill. Aborted execution.
+            echo [X] Port 9050 never became available after kill. Aborted execution. >> "%BW_LOG%"
             goto :handle_error
         )
     )
@@ -133,8 +133,8 @@ if /i "%USE_TOR%"=="true" (
     if %ERRORLEVEL% NEQ 0 (
         set /a waitcount+=1
         if !waitcount! LSS 30 goto waittorstart
-        echo [X] port 9050 was not opened!
-        echo [X] port 9050 was not opened! >> "%BW_LOG%"
+        echo [X] port 9050 was never opened!
+        echo [X] port 9050 was never opened! >> "%BW_LOG%"
         goto :handle_error
     )
     echo [+] Tor started successfully.
