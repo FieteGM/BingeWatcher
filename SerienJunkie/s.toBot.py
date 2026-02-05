@@ -415,19 +415,46 @@ def maybe_apply_intro_skip(
         seek_to_position(driver, intro_duration_seconds)
         return True
 
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
     matched_key = read_intro_fingerprint_match(driver)
-    if matched_key:
-        intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
-        if matched_key == intro_fingerprint_key:
-            current_time_value: float = float(
-                driver.execute_script(
-                    "return document.querySelector('video')?.currentTime || 0;"
-                )
-                or 0
+    if matched_key == intro_fingerprint_key:
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
             )
-            target_time: int = int(current_time_value + intro_duration_seconds)
-            seek_to_position(driver, target_time)
-            return True
+            or 0
+        )
+        target_time: int = int(current_time_value + intro_duration_seconds)
+        seek_to_position(driver, target_time)
+        return True
+
+    fingerprint_duration_raw: int = int(entry.get("fingerprintDuration", 0) or 0)
+    fingerprint_duration_seconds: int = max(0, fingerprint_duration_raw)
+    fallback_window_seconds: int = (
+        fingerprint_duration_seconds if fingerprint_duration_seconds > 0 else 12
+    )
+    fallback_trigger_seconds: int = min(
+        intro_duration_seconds,
+        max(6, fallback_window_seconds + 2),
+    )
+
+    try:
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
+            )
+            or 0
+        )
+    except Exception:
+        return intro_skip_applied
+
+    if current_time_value >= fallback_trigger_seconds:
+        logging.info(
+            "Intro fingerprint match timeout for %s. Falling back to intro duration skip.",
+            intro_fingerprint_key,
+        )
+        seek_to_position(driver, intro_duration_seconds)
+        return True
 
     return intro_skip_applied
 
