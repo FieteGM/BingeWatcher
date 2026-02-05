@@ -39,6 +39,7 @@ INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
 
 INTRO_AUTO_MATCH_CACHE: Dict[str, bool] = {}
 INTRO_AUTO_LISTEN_LOGGED: Dict[str, bool] = {}
+INTRO_AUTO_REASON_LOGGED: Dict[str, str] = {}
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -381,6 +382,14 @@ def resolve_intro_upload_path(filename: str) -> Optional[str]:
     return None
 
 
+def _log_intro_reason_once(intro_fingerprint_key: str, reason_key: str, message: str) -> None:
+    previous_reason: Optional[str] = INTRO_AUTO_REASON_LOGGED.get(intro_fingerprint_key)
+    if previous_reason == reason_key:
+        return
+    INTRO_AUTO_REASON_LOGGED[intro_fingerprint_key] = reason_key
+    logging.info(message)
+
+
 def _compare_fingerprint_prefix(stored_fingerprint: str, candidate_fingerprint: str) -> bool:
     stored_value: str = str(stored_fingerprint or '').strip()
     candidate_value: str = str(candidate_fingerprint or '').strip()
@@ -416,12 +425,15 @@ def try_match_current_video_fingerprint(
     season: int,
     fingerprint_value: str,
 ) -> bool:
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
     fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
     if not fpcalc_binary:
-        logging.debug('Intro fingerprint auto-match unavailable: fpcalc binary missing.')
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_fpcalc',
+            message=f'Intro fingerprint listening inactive for {intro_fingerprint_key}: fpcalc missing.',
+        )
         return False
-
-    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
 
     try:
         current_src_value: str = str(
@@ -431,11 +443,19 @@ def try_match_current_video_fingerprint(
             or ''
         ).strip()
     except Exception:
-        logging.debug('Intro fingerprint auto-match: failed to read current video src.')
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='video_src_read_failed',
+            message=f'Intro fingerprint listening waiting for video source for {intro_fingerprint_key}.',
+        )
         return False
 
     if not current_src_value:
-        logging.debug('Intro fingerprint auto-match: empty video src while listening.')
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='video_src_empty',
+            message=f'Intro fingerprint listening has empty video source for {intro_fingerprint_key}.',
+        )
         return False
 
     cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
@@ -457,9 +477,16 @@ def try_match_current_video_fingerprint(
             timeout=12,
         )
         if result.returncode != 0:
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key='fpcalc_failed',
+                message=(
+                    f'Intro fingerprint listening fpcalc failed for {intro_fingerprint_key} '
+                    f'(code {result.returncode}).'
+                ),
+            )
             logging.debug(
-                'Intro fingerprint auto-match fpcalc failed (%s): %s',
-                result.returncode,
+                'Intro fingerprint auto-match fpcalc stderr: %s',
                 (result.stderr or '').strip()[:300],
             )
             INTRO_AUTO_MATCH_CACHE[cache_key] = False
@@ -473,12 +500,18 @@ def try_match_current_video_fingerprint(
         )
         INTRO_AUTO_MATCH_CACHE[cache_key] = is_match
         if is_match:
+            INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
             logging.info(
                 'Automatic intro fingerprint match succeeded for %s.',
                 intro_fingerprint_key,
             )
         return is_match
     except Exception as e:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='probe_exception',
+            message=f'Intro fingerprint listening probe error for {intro_fingerprint_key}.',
+        )
         logging.debug('Automatic intro fingerprint match failed: %s', e)
         INTRO_AUTO_MATCH_CACHE[cache_key] = False
         return False
@@ -509,22 +542,38 @@ def maybe_apply_intro_skip(
         return True
 
     entry = get_intro_fingerprint_entry(series, season)
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
     if not entry:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_entry',
+            message=f'Intro listening skipped for {intro_fingerprint_key}: no fingerprint entry found.',
+        )
         return intro_skip_applied
 
     intro_duration_raw: int = int(entry.get("fullIntroDurationSeconds", 0) or 0)
     intro_duration_seconds: int = max(0, intro_duration_raw)
     if intro_duration_seconds <= 0:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_intro_duration',
+            message=f'Intro listening skipped for {intro_fingerprint_key}: intro duration is 0.',
+        )
         return intro_skip_applied
 
     fingerprint_value: str = str(entry.get("fingerprint", "") or "").strip()
     if not fingerprint_value:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='duration_only_mode',
+            message=f'Intro listening for {intro_fingerprint_key}: fingerprint empty, using duration skip only.',
+        )
         seek_to_position(driver, intro_duration_seconds)
         return True
 
-    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
     matched_key = read_intro_fingerprint_match(driver)
     if matched_key == intro_fingerprint_key:
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
         current_time_value: float = float(
             driver.execute_script(
                 "return document.querySelector('video')?.currentTime || 0;"
@@ -581,6 +630,7 @@ def maybe_apply_intro_skip(
         return intro_skip_applied
 
     if current_time_value >= fallback_trigger_seconds:
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
         logging.info(
             "Intro fingerprint match timeout for %s. Falling back to intro duration skip.",
             intro_fingerprint_key,
