@@ -61,18 +61,34 @@ where fpcalc >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo "[-] Chromaprint (fpcalc) missing. Attempting to install..."
     echo "[-] Chromaprint (fpcalc) missing. Attempting to install..." >> "%BW_LOG%"
+
+    set "BW_FPCALC_PATH=%ProgramFiles%\Chromaprint\fpcalc.exe"
+    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles%\Chromaprint"
+    set "BW_FPCALC_PATH=%ProgramFiles(x86)%\Chromaprint\fpcalc.exe"
+    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles(x86)%\Chromaprint"
+
     where winget >nul 2>&1
     if %ERRORLEVEL% EQU 0 (
-        winget install --id Chromaprint -e --silent >nul 2>&1
+        winget install --id Chromaprint.Chromaprint -e --silent >> "%BW_LOG%" 2>&1
+        if %ERRORLEVEL% NEQ 0 (
+            winget install --id Chromaprint -e --silent >> "%BW_LOG%" 2>&1
+        )
     )
     where choco >nul 2>&1
     if %ERRORLEVEL% EQU 0 (
-        choco install chromaprint -y >nul 2>&1
+        choco install chromaprint -y >> "%BW_LOG%" 2>&1
     )
+
+    set "BW_FPCALC_PATH=%ProgramFiles%\Chromaprint\fpcalc.exe"
+    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles%\Chromaprint"
+    set "BW_FPCALC_PATH=%ProgramFiles(x86)%\Chromaprint\fpcalc.exe"
+    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles(x86)%\Chromaprint"
+
     where fpcalc >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
-        echo "[!] Chromaprint couldn't be installed automatically. Please install fpcalc manually."
-        echo "[!] Chromaprint couldn't be installed automatically. Please install fpcalc manually." >> "%BW_LOG%"
+        echo "[^!] Chromaprint couldn't be installed automatically. Please install fpcalc manually."
+        echo "[^!] Chromaprint couldn't be installed automatically. Please install fpcalc manually." >> "%BW_LOG%"
+        echo "[^!] Check winget/choco output in %BW_LOG% for the exact install error." >> "%BW_LOG%"
     ) else (
         echo "[+] Chromaprint installed successfully."
         echo "[+] Chromaprint installed successfully." >> "%BW_LOG%"
@@ -167,8 +183,8 @@ if %EXITCODE% EQU 0 (
 
 :handle_error
 echo.
-echo "[!] Script aborted. Review the messages above."
-echo "[!] Script aborted. Review the messages above." >> "%BW_LOG%"
+echo "[^!] Script aborted. Review the messages above."
+echo "[^!] Script aborted. Review the messages above." >> "%BW_LOG%"
 echo "[i] Log saved to: %BW_LOG%"
 pause
 endlocal & exit /b 1
