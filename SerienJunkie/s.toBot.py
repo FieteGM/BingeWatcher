@@ -36,6 +36,9 @@ SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 INTRO_FINGERPRINTS_FILE = os.path.join(SCRIPT_DIR, "intro_fingerprints.json")
 INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
 
+
+INTRO_AUTO_MATCH_CACHE: Dict[str, bool] = {}
+
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
     "s.to": {
@@ -377,6 +380,80 @@ def resolve_intro_upload_path(filename: str) -> Optional[str]:
     return None
 
 
+def _compare_fingerprint_prefix(stored_fingerprint: str, candidate_fingerprint: str) -> bool:
+    stored_value: str = str(stored_fingerprint or '').strip()
+    candidate_value: str = str(candidate_fingerprint or '').strip()
+    if not stored_value or not candidate_value:
+        return False
+
+    prefix_length: int = min(120, len(stored_value), len(candidate_value))
+    if prefix_length < 64:
+        return False
+
+    return candidate_value[:prefix_length] == stored_value[:prefix_length]
+
+
+def try_match_current_video_fingerprint(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    fingerprint_value: str,
+) -> bool:
+    fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
+    if not fpcalc_binary:
+        return False
+
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+
+    try:
+        current_src_value: str = str(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentSrc || document.querySelector('video')?.src || '';"
+            )
+            or ''
+        ).strip()
+    except Exception:
+        return False
+
+    if not current_src_value:
+        return False
+
+    cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
+    cached_result: Optional[bool] = INTRO_AUTO_MATCH_CACHE.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    try:
+        result = subprocess.run(
+            [fpcalc_binary, '-json', current_src_value],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=12,
+        )
+        if result.returncode != 0:
+            INTRO_AUTO_MATCH_CACHE[cache_key] = False
+            return False
+
+        payload: Dict[str, Any] = json.loads(result.stdout or '{}')
+        episode_fingerprint_value: str = str(payload.get('fingerprint', '') or '').strip()
+        is_match: bool = _compare_fingerprint_prefix(
+            stored_fingerprint=fingerprint_value,
+            candidate_fingerprint=episode_fingerprint_value,
+        )
+        INTRO_AUTO_MATCH_CACHE[cache_key] = is_match
+        if is_match:
+            logging.info(
+                'Automatic intro fingerprint match succeeded for %s.',
+                intro_fingerprint_key,
+            )
+        return is_match
+    except Exception as e:
+        logging.debug('Automatic intro fingerprint match failed: %s', e)
+        INTRO_AUTO_MATCH_CACHE[cache_key] = False
+        return False
+
+
 def read_intro_fingerprint_match(driver: webdriver.Firefox) -> Optional[str]:
     try:
         driver.switch_to.default_content()
@@ -418,6 +495,22 @@ def maybe_apply_intro_skip(
     intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
     matched_key = read_intro_fingerprint_match(driver)
     if matched_key == intro_fingerprint_key:
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
+            )
+            or 0
+        )
+        target_time: int = int(current_time_value + intro_duration_seconds)
+        seek_to_position(driver, target_time)
+        return True
+
+    if try_match_current_video_fingerprint(
+        driver=driver,
+        series=series,
+        season=season,
+        fingerprint_value=fingerprint_value,
+    ):
         current_time_value: float = float(
             driver.execute_script(
                 "return document.querySelector('video')?.currentTime || 0;"
