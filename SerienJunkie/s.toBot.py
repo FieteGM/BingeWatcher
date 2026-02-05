@@ -1528,6 +1528,7 @@ def play_episodes_loop(
             except Exception:
                 pass
 
+            try:
                 upd = read_localstorage_value(driver, "bw_end_update")
                 if upd:
                     data = json.loads(upd)
@@ -4044,6 +4045,7 @@ def main() -> None:
                 except Exception:
                     pass
 
+                try:
                     upd = read_localstorage_value(driver, "bw_end_update")
                     if upd:
                         data = json.loads(upd)
