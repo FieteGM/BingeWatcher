@@ -38,6 +38,7 @@ INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
 
 
 INTRO_AUTO_MATCH_CACHE: Dict[str, bool] = {}
+INTRO_AUTO_LISTEN_LOGGED: Dict[str, bool] = {}
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -386,11 +387,27 @@ def _compare_fingerprint_prefix(stored_fingerprint: str, candidate_fingerprint: 
     if not stored_value or not candidate_value:
         return False
 
-    prefix_length: int = min(120, len(stored_value), len(candidate_value))
-    if prefix_length < 64:
+    if stored_value == candidate_value:
+        return True
+
+    prefix_length: int = min(96, len(stored_value), len(candidate_value))
+    if prefix_length >= 48 and candidate_value[:prefix_length] == stored_value[:prefix_length]:
+        return True
+
+    anchor_length: int = 32
+    if len(stored_value) < anchor_length or len(candidate_value) < anchor_length:
         return False
 
-    return candidate_value[:prefix_length] == stored_value[:prefix_length]
+    anchor_offsets: List[int] = [0, 32, 64]
+    anchor_hits: int = 0
+    for anchor_offset in anchor_offsets:
+        if anchor_offset + anchor_length > len(stored_value):
+            continue
+        anchor_value: str = stored_value[anchor_offset : anchor_offset + anchor_length]
+        if anchor_value and anchor_value in candidate_value:
+            anchor_hits += 1
+
+    return anchor_hits >= 2
 
 
 def try_match_current_video_fingerprint(
@@ -401,6 +418,7 @@ def try_match_current_video_fingerprint(
 ) -> bool:
     fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
     if not fpcalc_binary:
+        logging.debug('Intro fingerprint auto-match unavailable: fpcalc binary missing.')
         return False
 
     intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
@@ -413,15 +431,22 @@ def try_match_current_video_fingerprint(
             or ''
         ).strip()
     except Exception:
+        logging.debug('Intro fingerprint auto-match: failed to read current video src.')
         return False
 
     if not current_src_value:
+        logging.debug('Intro fingerprint auto-match: empty video src while listening.')
         return False
 
     cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
     cached_result: Optional[bool] = INTRO_AUTO_MATCH_CACHE.get(cache_key)
     if cached_result is not None:
         return cached_result
+
+    logging.info(
+        'Start listening to episode intro fingerprint for %s.',
+        intro_fingerprint_key,
+    )
 
     try:
         result = subprocess.run(
@@ -432,6 +457,11 @@ def try_match_current_video_fingerprint(
             timeout=12,
         )
         if result.returncode != 0:
+            logging.debug(
+                'Intro fingerprint auto-match fpcalc failed (%s): %s',
+                result.returncode,
+                (result.stderr or '').strip()[:300],
+            )
             INTRO_AUTO_MATCH_CACHE[cache_key] = False
             return False
 
@@ -505,6 +535,15 @@ def maybe_apply_intro_skip(
         seek_to_position(driver, target_time)
         return True
 
+    if not INTRO_AUTO_LISTEN_LOGGED.get(intro_fingerprint_key):
+        logging.info(
+            'Start listening to episode intro for %s (introDuration=%ss, fingerprintDuration=%ss).',
+            intro_fingerprint_key,
+            intro_duration_seconds,
+            int(entry.get("fingerprintDuration", 0) or 0),
+        )
+        INTRO_AUTO_LISTEN_LOGGED[intro_fingerprint_key] = True
+
     if try_match_current_video_fingerprint(
         driver=driver,
         series=series,
@@ -549,6 +588,12 @@ def maybe_apply_intro_skip(
         seek_to_position(driver, intro_duration_seconds)
         return True
 
+    logging.debug(
+        'Intro fingerprint not matched yet for %s (currentTime=%.2f, fallbackAt=%ss).',
+        intro_fingerprint_key,
+        current_time_value,
+        fallback_trigger_seconds,
+    )
     return intro_skip_applied
 
 
