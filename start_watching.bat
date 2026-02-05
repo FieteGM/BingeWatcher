@@ -57,45 +57,18 @@ if "%missing_modules%"=="" (
 
 REM === Check for Chromaprint (fpcalc) ===
 echo "[i] Checking Chromaprint (fpcalc)..." >> "%BW_LOG%"
+
+if exist "fpcalc.exe" (
+    set "PATH=%CD%;%PATH%"
+)
+
 where fpcalc >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo "[-] Chromaprint (fpcalc) missing. Attempting to install..."
-    echo "[-] Chromaprint (fpcalc) missing. Attempting to install..." >> "%BW_LOG%"
-
-    set "BW_FPCALC_PATH=%ProgramFiles%\Chromaprint\fpcalc.exe"
-    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles%\Chromaprint"
-    set "BW_FPCALC_PATH=%ProgramFiles(x86)%\Chromaprint\fpcalc.exe"
-    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles(x86)%\Chromaprint"
-
-    where winget >nul 2>&1
-    if %ERRORLEVEL% EQU 0 (
-        winget install --id Chromaprint.Chromaprint -e --silent >> "%BW_LOG%" 2>&1
-        if %ERRORLEVEL% NEQ 0 (
-            winget install --id Chromaprint -e --silent >> "%BW_LOG%" 2>&1
-        )
-    )
-    where choco >nul 2>&1
-    if %ERRORLEVEL% EQU 0 (
-        choco install chromaprint -y >> "%BW_LOG%" 2>&1
-    )
-
-    set "BW_FPCALC_PATH=%ProgramFiles%\Chromaprint\fpcalc.exe"
-    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles%\Chromaprint"
-    set "BW_FPCALC_PATH=%ProgramFiles(x86)%\Chromaprint\fpcalc.exe"
-    if exist "%BW_FPCALC_PATH%" set "PATH=%PATH%;%ProgramFiles(x86)%\Chromaprint"
-
-    where fpcalc >nul 2>&1
-    if %ERRORLEVEL% NEQ 0 (
-        echo "[^!] Chromaprint couldn't be installed automatically. Please install fpcalc manually."
-        echo "[^!] Chromaprint couldn't be installed automatically. Please install fpcalc manually." >> "%BW_LOG%"
-        echo "[^!] Check winget/choco output in %BW_LOG% for the exact install error." >> "%BW_LOG%"
-    ) else (
-        echo "[+] Chromaprint installed successfully."
-        echo "[+] Chromaprint installed successfully." >> "%BW_LOG%"
-    )
+    echo "[^!] Chromaprint (fpcalc) missing. Place fpcalc.exe in the SerienJunkie folder."
+    echo "[^!] Chromaprint (fpcalc) missing. Place fpcalc.exe in the SerienJunkie folder." >> "%BW_LOG%"
 ) else (
-    echo "[+] Chromaprint (fpcalc) already installed."
-    echo "[+] Chromaprint (fpcalc) already installed." >> "%BW_LOG%"
+    echo "[+] Chromaprint (fpcalc) available."
+    echo "[+] Chromaprint (fpcalc) available." >> "%BW_LOG%"
 )
 
 REM === Check Tor setting from settings.json ===
