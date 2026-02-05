@@ -1387,8 +1387,25 @@ def play_episodes_loop(
         apply_media_settings(driver, rate, vol)
         
         if position and position > 0:
-            seek_to_position(driver, position)
-            intro_skip_applied = True
+            resume_position_seconds: int = int(position)
+            if resume_position_seconds > 3:
+                logging.info(
+                    "Intro listening disabled for this episode because resume position is %ss.",
+                    resume_position_seconds,
+                )
+                seek_to_position(driver, resume_position_seconds)
+                intro_skip_applied = True
+            else:
+                logging.info(
+                    "Resume position %ss is too small, treating as fresh start for intro listening.",
+                    resume_position_seconds,
+                )
+                intro_skip_applied = maybe_apply_intro_skip(
+                    driver=driver,
+                    series=series,
+                    season=current_season,
+                    intro_skip_applied=intro_skip_applied,
+                )
         else:
             intro_skip_applied = maybe_apply_intro_skip(
                 driver=driver,
