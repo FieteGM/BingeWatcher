@@ -5,8 +5,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "s.to",
-    "intro_skip_start": 80,
-    "intro_skip_end": 140,
     "end_skip": 0
   },
   "naruto": {
@@ -15,8 +13,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "s.to",
-    "intro_skip_start": 80,
-    "intro_skip_end": 140,
     "end_skip": 0
   },
   "one-punch-man": {
@@ -25,8 +21,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145,
     "end_skip": 0
   },
   "jujutsu-kaisen": {
@@ -35,8 +29,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145,
     "end_skip": 0
   },
   "attack-on-titan": {
@@ -45,8 +37,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 80,
-    "intro_skip_end": 140,
     "end_skip": 0
   },
   "demon-slayer-kimetsu-no-yaiba": {
@@ -55,8 +45,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145,
     "end_skip": 0
   },
   "dan-da-dan": {
@@ -65,8 +53,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145,
     "end_skip": 0
   },
   "kaiju-no-8": {
@@ -75,8 +61,6 @@
     "position": 0,
     "timestamp": 0,
     "provider": "aniworld.to",
-    "intro_skip_start": 85,
-    "intro_skip_end": 145,
     "end_skip": 0
   }
 }
