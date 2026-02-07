@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import unquote
 
 from selenium import webdriver
@@ -652,6 +652,25 @@ def maybe_apply_intro_skip(
         INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
         logging.info(
             "Intro fingerprint match timeout for %s. Falling back to intro duration skip.",
+            intro_fingerprint_key,
+        )
+        seek_to_position(driver, intro_duration_seconds)
+        return True
+
+    reason_value: Optional[str] = INTRO_AUTO_REASON_LOGGED.get(intro_fingerprint_key)
+    early_fallback_reasons: Set[str] = {
+        "missing_fpcalc",
+        "video_src_wait_timeout",
+        "fpcalc_failed",
+        "probe_exception",
+    }
+    if reason_value in early_fallback_reasons and current_time_value >= min(
+        6,
+        intro_duration_seconds,
+    ):
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+        logging.info(
+            "Intro fingerprint probe unavailable for %s. Applying duration skip.",
             intro_fingerprint_key,
         )
         seek_to_position(driver, intro_duration_seconds)
