@@ -40,6 +40,7 @@ INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
 INTRO_AUTO_MATCH_CACHE: Dict[str, bool] = {}
 INTRO_AUTO_LISTEN_LOGGED: Dict[str, bool] = {}
 INTRO_AUTO_REASON_LOGGED: Dict[str, str] = {}
+INTRO_VIDEO_SRC_LOGGED: Dict[str, bool] = {}
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -390,6 +391,30 @@ def _log_intro_reason_once(intro_fingerprint_key: str, reason_key: str, message:
     logging.info(message)
 
 
+def _wait_for_video_source(driver: webdriver.Firefox, timeout_seconds: int = 6) -> str:
+    deadline_value: float = time.time() + max(1, timeout_seconds)
+    while time.time() < deadline_value:
+        try:
+            src_value: str = str(
+                driver.execute_script(
+                    "return document.querySelector('video')?.currentSrc || document.querySelector('video')?.src || '';"
+                )
+                or ""
+            ).strip()
+            ready_state_value: int = int(
+                driver.execute_script(
+                    "return document.querySelector('video')?.readyState || 0;"
+                )
+                or 0
+            )
+            if src_value and ready_state_value >= 3:
+                return src_value
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return ""
+
+
 def _compare_fingerprint_prefix(stored_fingerprint: str, candidate_fingerprint: str) -> bool:
     stored_value: str = str(stored_fingerprint or '').strip()
     candidate_value: str = str(candidate_fingerprint or '').strip()
@@ -436,26 +461,20 @@ def try_match_current_video_fingerprint(
         return False
 
     try:
-        current_src_value: str = str(
-            driver.execute_script(
-                "return document.querySelector('video')?.currentSrc || document.querySelector('video')?.src || '';"
-            )
-            or ''
-        ).strip()
+        current_src_value: str = _wait_for_video_source(driver)
     except Exception:
-        _log_intro_reason_once(
-            intro_fingerprint_key=intro_fingerprint_key,
-            reason_key='video_src_read_failed',
-            message=f'Intro fingerprint listening waiting for video source for {intro_fingerprint_key}.',
-        )
-        return False
+        current_src_value = ""
 
     if not current_src_value:
-        _log_intro_reason_once(
-            intro_fingerprint_key=intro_fingerprint_key,
-            reason_key='video_src_empty',
-            message=f'Intro fingerprint listening has empty video source for {intro_fingerprint_key}.',
-        )
+        if not INTRO_VIDEO_SRC_LOGGED.get(intro_fingerprint_key):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key='video_src_wait_timeout',
+                message=(
+                    f'Intro fingerprint listening waiting for video source for {intro_fingerprint_key}.'
+                ),
+            )
+            INTRO_VIDEO_SRC_LOGGED[intro_fingerprint_key] = True
         return False
 
     cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
