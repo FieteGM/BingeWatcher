@@ -461,6 +461,26 @@ def try_match_current_video_fingerprint(
         return False
 
     try:
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return False
+    except Exception:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key="video_context_missing",
+            message=(
+                f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+            ),
+        )
+        return False
+
+    try:
         current_src_value: str = _wait_for_video_source(driver)
     except Exception:
         current_src_value = ""
@@ -660,6 +680,7 @@ def maybe_apply_intro_skip(
     reason_value: Optional[str] = INTRO_AUTO_REASON_LOGGED.get(intro_fingerprint_key)
     early_fallback_reasons: Set[str] = {
         "missing_fpcalc",
+        "video_context_missing",
         "video_src_wait_timeout",
         "fpcalc_failed",
         "probe_exception",
