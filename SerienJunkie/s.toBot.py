@@ -497,6 +497,19 @@ def try_match_current_video_fingerprint(
             INTRO_VIDEO_SRC_LOGGED[intro_fingerprint_key] = True
         return False
 
+    lower_src_value: str = current_src_value.lower()
+    if lower_src_value.startswith("http") and not lower_src_value.endswith(
+        (".mp3", ".wav", ".flac", ".m4a", ".aac")
+    ):
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key="video_src_unsupported",
+            message=(
+                f"Intro fingerprint listening cannot probe non-audio source for {intro_fingerprint_key}."
+            ),
+        )
+        return False
+
     cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
     cached_result: Optional[bool] = INTRO_AUTO_MATCH_CACHE.get(cache_key)
     if cached_result is not None:
@@ -709,6 +722,7 @@ def maybe_apply_intro_skip(
         "missing_fpcalc",
         "video_context_missing",
         "video_src_wait_timeout",
+        "video_src_unsupported",
         "fpcalc_failed",
         "probe_exception",
     }
