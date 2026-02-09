@@ -613,6 +613,15 @@ def maybe_apply_intro_skip(
     matched_key = read_intro_fingerprint_match(driver)
     if matched_key == intro_fingerprint_key:
         INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
         current_time_value: float = float(
             driver.execute_script(
                 "return document.querySelector('video')?.currentTime || 0;"
@@ -638,6 +647,15 @@ def maybe_apply_intro_skip(
         season=season,
         fingerprint_value=fingerprint_value,
     ):
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
         current_time_value: float = float(
             driver.execute_script(
                 "return document.querySelector('video')?.currentTime || 0;"
@@ -659,6 +677,15 @@ def maybe_apply_intro_skip(
     )
 
     try:
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
         current_time_value: float = float(
             driver.execute_script(
                 "return document.querySelector('video')?.currentTime || 0;"
