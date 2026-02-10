@@ -1,7 +1,7 @@
 # BingeWatcher
 
 Automated binge-watching helper for **s.to** and **aniworld.to** with progress
-tracking, intro/end skipping, and a modern sidebar UI for quick navigation.
+ tracking, end-screen skipping, and a modern sidebar UI for quick navigation.
 
 > **Strict disclaimer**: I do **not** support, endorse, or encourage the use of
 > this script. It is published **for educational review only**. Do **not** use
@@ -15,7 +15,7 @@ tracking, intro/end skipping, and a modern sidebar UI for quick navigation.
 - **Multi-provider support**: s.to and aniworld.to with automatic provider
   detection.
 - **Progress tracking**: resume by series/season/episode with saved timestamps.
-- **Smart intro skip**: per-series intro start/end times.
+- **Optional intro skip**: fingerprint-configured per season.
 - **End screen skip**: jump past credits/outro if configured.
 - **Auto fullscreen**: multiple fallback strategies for stubborn players.
 - **Sidebar UI**: search, sort, quick actions, and settings panel.
@@ -66,7 +66,6 @@ The script will:
 | --- | --- | --- |
 | `BW_HEADLESS` | `false` | Run Firefox headless (`true/false`). |
 | `BW_START_URL` | `https://s.to/` | Start URL (provider homepage). |
-| `BW_INTRO_SKIP` | `80` | Default intro skip (seconds). |
 | `BW_MAX_RETRIES` | `3` | Navigation retry count. |
 | `BW_WAIT_TIMEOUT` | `25` | Page load wait timeout. |
 | `BW_PROGRESS_INTERVAL` | `5` | Progress save interval (seconds). |
@@ -81,28 +80,56 @@ Important keys:
 
 - `useTorProxy` (boolean)
 - `autoFullscreen` (boolean)
-- `autoSkipIntro` (boolean)
 - `autoSkipEndScreen` (boolean)
 - `autoNext` (boolean)
 - `playbackRate` (number)
 - `volume` (number, `0.0`–`1.0`)
 
+### Intro fingerprints (optional)
+
+To enable intro skipping per season, create `intro_fingerprints.json` with keys
+like `<series>_s<season>`, for example `one_piece_s07`:
+
+```json
+{
+  "one_piece_s07": {
+    "fingerprint": "A_LONG_FP_STRING",
+    "fingerprintDuration": 10,
+    "fullIntroDurationSeconds": 145
+  }
+}
+```
+
+If `fingerprint` is omitted but `fullIntroDurationSeconds` is present, the
+player will skip the first N seconds at the start of the episode. If a
+fingerprint is present, an external matcher can signal a match by writing the
+matched key into `localStorage` as `bw_intro_fp_match`. You can also edit these
+values per series/season from the in-app “Skip Settings” panel.
+
+To generate a fingerprint without editing JSON, drop your MP3 into
+`SerienJunkie/intro_uploads/`, open the per-series “Skip Settings” panel, and
+select the file in the “Select MP3 (intro_uploads)” picker. The app will
+generate the fingerprint, save it into `intro_fingerprints.json`, and delete the
+MP3 after processing.
+
 ## Data Files
 
 - `progress.json`: persisted progress by series.
-- `intro_times.json`: optional default intro windows by season.
+- `intro_fingerprints.json`: optional intro fingerprint configuration.
 - `settings.json`: app settings.
 
 ## Sidebar Highlights
 
 - **Series list** with last watched time.
 - **Provider tabs** to filter s.to vs. aniworld.to.
-- **Per-series controls** for intro and end skip windows.
+- **Per-series controls** for intro duration/fingerprint and end skip windows.
 - **Quick actions**: skip episode, open settings, quit.
 
 ## Troubleshooting
 
 - **GeckoDriver not found**: Ensure `geckodriver.exe` sits next to `s.toBot.py`.
+- **Chromaprint (fpcalc) missing**: Install Chromaprint so the MP3 fingerprint
+  generator can run (`fpcalc` must be on PATH).
 - **Video not playing**: Refresh the page or press Space to play.
 - **Sidebar missing**: Reload; some pages block injection until fully loaded.
 
@@ -115,7 +142,8 @@ SerienJunkie/
 ├── README.md               # This file
 ├── geckodriver.exe         # Firefox WebDriver
 ├── progress.json           # Progress database (auto-created)
-├── intro_times.json        # Optional intro presets
+├── intro_fingerprints.json # Optional intro fingerprint data
+├── intro_uploads/          # Optional MP3 drop folder
 └── user.BingeWatcher/      # Firefox profile (auto-created)
 ```
 

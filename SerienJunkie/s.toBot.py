@@ -3,8 +3,11 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import unquote
 
 from selenium import webdriver
@@ -21,7 +24,6 @@ from selenium.webdriver.common.actions.pointer_input import PointerInput
 # === CONFIGURATION ===
 HEADLESS: bool = os.getenv("BW_HEADLESS", "false").lower() in {"1", "true", "yes"}
 START_URL: str = os.getenv("BW_START_URL", "https://s.to/")
-INTRO_SKIP_SECONDS: int = int(os.getenv("BW_INTRO_SKIP", "80"))
 MAX_RETRIES: int = int(os.getenv("BW_MAX_RETRIES", "3"))
 WAIT_TIMEOUT: int = int(os.getenv("BW_WAIT_TIMEOUT", "25"))
 PROGRESS_SAVE_INTERVAL: int = int(os.getenv("BW_PROGRESS_INTERVAL", "5"))
@@ -31,6 +33,14 @@ GECKO_DRIVER_PATH = os.path.join(SCRIPT_DIR, "geckodriver.exe")
 
 PROGRESS_DB_FILE = os.path.join(SCRIPT_DIR, "progress.json")
 SETTINGS_DB_FILE = os.path.join(SCRIPT_DIR, "settings.json")
+INTRO_FINGERPRINTS_FILE = os.path.join(SCRIPT_DIR, "intro_fingerprints.json")
+INTRO_UPLOAD_DIR = os.path.join(SCRIPT_DIR, "intro_uploads")
+
+
+INTRO_AUTO_MATCH_CACHE: Dict[str, bool] = {}
+INTRO_AUTO_LISTEN_LOGGED: Dict[str, bool] = {}
+INTRO_AUTO_REASON_LOGGED: Dict[str, str] = {}
+INTRO_VIDEO_SRC_LOGGED: Dict[str, bool] = {}
 
 # === STREAMING PROVIDERS ===
 STREAMING_PROVIDERS = {
@@ -144,156 +154,6 @@ def handle_list_item_deletion(name: str) -> bool:
         return False
 
 
-def get_intro_skip_seconds(series: str) -> int:
-    try:
-        data = load_progress().get(series, {})
-        val = int(data.get("intro_skip_start", INTRO_SKIP_SECONDS))
-        return max(0, val)
-    except Exception:
-        return INTRO_SKIP_SECONDS
-
-
-def get_intro_skip_end_seconds(series: str) -> int:
-    try:
-        data = load_progress().get(series, {})
-        val = int(data.get("intro_skip_end", INTRO_SKIP_SECONDS + 60))
-        return max(0, val)
-    except Exception:
-        return INTRO_SKIP_SECONDS + 60
-
-
-def set_intro_skip_seconds(series: str, start_seconds: int, end_seconds: int = None) -> bool:
-    try:
-        start_seconds = max(0, int(start_seconds))
-        if end_seconds is None:
-            end_seconds = start_seconds + 60
-        end_seconds = max(0, int(end_seconds))
-        
-        db = load_progress()
-        entry = db.get(series, {}) if isinstance(db.get(series, {}), dict) else {}
-        entry["intro_skip_start"] = start_seconds
-        entry["intro_skip_end"] = end_seconds
-        db[series] = entry
-        with open(PROGRESS_DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(db, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        logging.error(f"Intro time could not be saved: {e}")
-        return False
-
-
-def load_intro_times() -> Dict[str, Any]:
-    """Load intro times from intro_times.json"""
-    try:
-        intro_times_file = os.path.join(SCRIPT_DIR, "intro_times.json")
-        if os.path.exists(intro_times_file):
-            with open(intro_times_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        logging.error(f"Could not load intro times: {e}")
-        return {}
-
-
-def get_default_intro_times(series: str, season: int = 1) -> tuple[int, int]:
-    """Get default intro times for a series and season"""
-    try:
-        intro_times = load_intro_times()
-        series_data = intro_times.get(series, {})
-        
-        # Try to find specific season data
-        for intro in series_data.get("intros", []):
-            if intro.get("season") == season:
-                return intro.get("start_time", 90), intro.get("end_time", 150)
-        
-        # Fall back to default times
-        return series_data.get("default_skip_start", 90), series_data.get("default_skip_end", 150)
-    except Exception:
-        return 90, 150
-
-
-def detect_intro_start(driver, series: str, season: int = 1) -> bool:
-    """Detect if an intro is currently playing"""
-    try:
-        intro_times = load_intro_times()
-        series_data = intro_times.get(series, {})
-        
-        # Get current video time
-        current_time = driver.execute_script("return document.querySelector('video')?.currentTime || 0;")
-        
-        # Check if we're in the intro time window
-        for intro in series_data.get("intros", []):
-            if intro.get("season") == season:
-                start_time = intro.get("start_time", 90)
-                end_time = intro.get("end_time", 150)
-                
-                if start_time <= current_time <= end_time:
-                    # Additional detection patterns
-                    detection_patterns = intro.get("detection_patterns", [])
-                    
-                    # Check for intro indicators in the page
-                    page_text = driver.execute_script("return document.body.innerText.toLowerCase();")
-                    
-                    for pattern in detection_patterns:
-                        if pattern.lower() in page_text:
-                            return True
-                    
-                    # If we're in the time window and no specific patterns found, assume it's an intro
-                    return True
-        
-        return False
-    except Exception as e:
-        logging.error(f"Error detecting intro: {e}")
-        return False
-
-
-def smart_skip_intro(driver, series: str, season: int = 1):
-    """Smart intro skipping that only skips when an intro is detected"""
-    try:
-        # Wait for video to be ready
-        WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script(
-                "return document.querySelector('video')?.readyState > 0;"
-            )
-        )
-
-        progress_entry = load_progress().get(series, {})
-        has_custom_intro = (
-            "intro_skip_start" in progress_entry
-            or "intro_skip_end" in progress_entry
-        )
-        if has_custom_intro:
-            intro_start = get_intro_skip_seconds(series)
-            intro_end = get_intro_skip_end_seconds(series)
-            if intro_end > intro_start:
-                current_time = driver.execute_script(
-                    "return document.querySelector('video')?.currentTime || 0;"
-                )
-                if intro_start <= current_time <= intro_end:
-                    driver.execute_script(
-                        "document.querySelector('video').currentTime = arguments[0];",
-                        intro_end,
-                    )
-            return
-
-        # Get intro times
-        intro_start, intro_end = get_default_intro_times(series, season)
-
-        # Check if we should skip intro
-        if detect_intro_start(driver, series, season):
-            logging.info(f"Intro detected for {series}, skipping to {intro_end} seconds")
-            driver.execute_script(
-                "document.querySelector('video').currentTime = arguments[0];",
-                intro_end,
-            )
-        else:
-            logging.info(f"No intro detected for {series}, continuing normally")
-            
-    except Exception as e:
-        logging.error(f"Error in smart intro skip: {e}")
-        # Fall back to simple skip
-        skip_intro(driver, get_intro_skip_seconds(series))
-
 
 def get_end_skip_seconds(series: str) -> int:
     try:
@@ -324,6 +184,634 @@ def norm_series_key(s: str) -> str:
         return _html.unescape(str(s or "")).strip()
     except Exception:
         return str(s or "").strip()
+
+
+def build_intro_fingerprint_key(series: str, season: int) -> str:
+    safe_series: str = re.sub(r"[^a-z0-9_]+", "_", (series or "").lower())
+    safe_series = safe_series.strip("_")
+    season_value: int = max(0, int(season))
+    return f"{safe_series}_s{season_value:02d}"
+
+
+def load_intro_fingerprints() -> Dict[str, Dict[str, Any]]:
+    try:
+        if os.path.exists(INTRO_FINGERPRINTS_FILE):
+            with open(INTRO_FINGERPRINTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        return {}
+    except Exception as e:
+        logging.error(f"Intro fingerprints could not be loaded: {e}")
+        return {}
+
+
+def get_intro_fingerprint_entry(series: str, season: int) -> Optional[Dict[str, Any]]:
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+    intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
+    entry_raw: Optional[Dict[str, Any]] = intro_fingerprints.get(intro_fingerprint_key)
+    if not isinstance(entry_raw, dict):
+        return None
+    return entry_raw
+
+
+def set_intro_fingerprint_entry(
+    series: str,
+    season: int,
+    full_intro_duration_seconds: int,
+    fingerprint: str,
+    fingerprint_duration: int,
+) -> bool:
+    try:
+        intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
+        intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+        entry: Dict[str, Any] = intro_fingerprints.get(intro_fingerprint_key, {})
+
+        intro_duration_value: int = max(0, int(full_intro_duration_seconds))
+        fingerprint_value: str = str(fingerprint or "").strip()
+        fingerprint_duration_value: int = max(0, int(fingerprint_duration))
+
+        if intro_duration_value > 0:
+            entry["fullIntroDurationSeconds"] = intro_duration_value
+        else:
+            entry.pop("fullIntroDurationSeconds", None)
+
+        if fingerprint_value:
+            entry["fingerprint"] = fingerprint_value
+            if fingerprint_duration_value > 0:
+                entry["fingerprintDuration"] = fingerprint_duration_value
+            else:
+                entry.pop("fingerprintDuration", None)
+        else:
+            entry.pop("fingerprint", None)
+            entry.pop("fingerprintDuration", None)
+
+        if not entry:
+            intro_fingerprints.pop(intro_fingerprint_key, None)
+        else:
+            intro_fingerprints[intro_fingerprint_key] = entry
+
+        with open(INTRO_FINGERPRINTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(intro_fingerprints, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logging.error(f"Intro fingerprint could not be saved: {e}")
+        return False
+
+
+def merge_intro_fingerprint_entry(
+    series: str,
+    season: int,
+    full_intro_duration_seconds: Optional[int],
+    fingerprint: Optional[str],
+    fingerprint_duration: Optional[int],
+) -> bool:
+    entry: Optional[Dict[str, Any]] = get_intro_fingerprint_entry(series, season)
+    current_duration: int = int((entry or {}).get("fullIntroDurationSeconds", 0) or 0)
+    current_fingerprint: str = str((entry or {}).get("fingerprint", "") or "")
+    current_fp_duration: int = int((entry or {}).get("fingerprintDuration", 0) or 0)
+
+    next_duration: int = (
+        int(full_intro_duration_seconds)
+        if full_intro_duration_seconds is not None
+        else current_duration
+    )
+    next_fingerprint: str = (
+        str(fingerprint or "")
+        if fingerprint is not None
+        else current_fingerprint
+    )
+    next_fp_duration: int = (
+        int(fingerprint_duration)
+        if fingerprint_duration is not None
+        else current_fp_duration
+    )
+
+    return set_intro_fingerprint_entry(
+        series=series,
+        season=season,
+        full_intro_duration_seconds=next_duration,
+        fingerprint=next_fingerprint,
+        fingerprint_duration=next_fp_duration,
+    )
+
+
+def _resolve_fpcalc_binary() -> Optional[str]:
+    fpcalc_binary: Optional[str] = shutil.which("fpcalc")
+    if fpcalc_binary:
+        return fpcalc_binary
+    return shutil.which("fpcalc.exe")
+
+
+def _resolve_ffmpeg_binary() -> Optional[str]:
+    ffmpeg_binary: Optional[str] = shutil.which("ffmpeg")
+    if ffmpeg_binary:
+        return ffmpeg_binary
+    return shutil.which("ffmpeg.exe")
+
+
+def extract_fingerprint_from_mp3(mp3_bytes: bytes) -> Optional[Dict[str, Any]]:
+    fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
+    if not fpcalc_binary:
+        logging.error("fpcalc binary not found. Please install Chromaprint.")
+        return None
+
+    temp_file = None
+    try:
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".mp3",
+            delete=False,
+            dir=SCRIPT_DIR,
+        )
+        temp_file.write(mp3_bytes)
+        temp_file.flush()
+        temp_file.close()
+
+        result = subprocess.run(
+            [fpcalc_binary, "-json", temp_file.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logging.error(
+                f"fpcalc failed: {result.stderr.strip() or 'unknown error'}"
+            )
+            return None
+
+        payload = json.loads(result.stdout or "{}")
+        if not isinstance(payload, dict):
+            return None
+
+        fingerprint_value: str = str(payload.get("fingerprint", "") or "").strip()
+        duration_value: int = int(payload.get("duration", 0) or 0)
+        if not fingerprint_value:
+            return None
+
+        return {
+            "fingerprint": fingerprint_value,
+            "fingerprintDuration": duration_value,
+        }
+    except Exception as e:
+        logging.error(f"Fingerprint extraction failed: {e}")
+        return None
+    finally:
+        try:
+            if temp_file is not None and os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+        except Exception:
+            pass
+
+
+def list_intro_upload_files() -> List[str]:
+    try:
+        os.makedirs(INTRO_UPLOAD_DIR, exist_ok=True)
+        files = [
+            name
+            for name in os.listdir(INTRO_UPLOAD_DIR)
+            if name.lower().endswith(".mp3")
+        ]
+        return sorted(files)
+    except Exception:
+        return []
+
+
+def resolve_intro_upload_path(filename: str) -> Optional[str]:
+    safe_name: str = os.path.basename(filename or "")
+    if not safe_name:
+        return None
+    candidate: str = os.path.join(INTRO_UPLOAD_DIR, safe_name)
+    try:
+        if os.path.exists(candidate):
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _log_intro_reason_once(intro_fingerprint_key: str, reason_key: str, message: str) -> None:
+    previous_reason: Optional[str] = INTRO_AUTO_REASON_LOGGED.get(intro_fingerprint_key)
+    if previous_reason == reason_key:
+        return
+    INTRO_AUTO_REASON_LOGGED[intro_fingerprint_key] = reason_key
+    logging.info(message)
+
+
+def _wait_for_video_source(driver: webdriver.Firefox, timeout_seconds: int = 12) -> str:
+    deadline_value: float = time.time() + max(12, timeout_seconds)
+    while time.time() < deadline_value:
+        try:
+            src_value: str = str(
+                driver.execute_script(
+                    "return document.querySelector('video')?.currentSrc || document.querySelector('video')?.src || '';"
+                )
+                or ""
+            ).strip()
+            ready_state_value: int = int(
+                driver.execute_script(
+                    "return document.querySelector('video')?.readyState || 0;"
+                )
+                or 0
+            )
+            if src_value and ready_state_value >= 3:
+                return src_value
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return ""
+
+
+def _compare_fingerprint_prefix(stored_fingerprint: str, candidate_fingerprint: str) -> bool:
+    stored_value: str = str(stored_fingerprint or '').strip()
+    candidate_value: str = str(candidate_fingerprint or '').strip()
+    if not stored_value or not candidate_value:
+        return False
+
+    if stored_value == candidate_value:
+        return True
+
+    prefix_length: int = min(96, len(stored_value), len(candidate_value))
+    if prefix_length >= 48 and candidate_value[:prefix_length] == stored_value[:prefix_length]:
+        return True
+
+    anchor_length: int = 32
+    if len(stored_value) < anchor_length or len(candidate_value) < anchor_length:
+        return False
+
+    anchor_offsets: List[int] = [0, 32, 64]
+    anchor_hits: int = 0
+    for anchor_offset in anchor_offsets:
+        if anchor_offset + anchor_length > len(stored_value):
+            continue
+        anchor_value: str = stored_value[anchor_offset : anchor_offset + anchor_length]
+        if anchor_value and anchor_value in candidate_value:
+            anchor_hits += 1
+
+    return anchor_hits >= 2
+
+
+def try_match_current_video_fingerprint(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    fingerprint_value: str,
+) -> bool:
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+    temp_audio_path: Optional[str] = None
+    fpcalc_binary: Optional[str] = _resolve_fpcalc_binary()
+    if not fpcalc_binary:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_fpcalc',
+            message=f'Intro fingerprint listening inactive for {intro_fingerprint_key}: fpcalc missing.',
+        )
+        return False
+
+    try:
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return False
+    except Exception:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key="video_context_missing",
+            message=(
+                f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+            ),
+        )
+        return False
+
+    try:
+        current_src_value: str = _wait_for_video_source(driver)
+    except Exception:
+        current_src_value = ""
+
+    if not current_src_value:
+        if not INTRO_VIDEO_SRC_LOGGED.get(intro_fingerprint_key):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key='video_src_wait_timeout',
+                message=(
+                    f'Intro fingerprint listening waiting for video source for {intro_fingerprint_key}.'
+                ),
+            )
+            INTRO_VIDEO_SRC_LOGGED[intro_fingerprint_key] = True
+        return False
+
+    lower_src_value: str = current_src_value.lower()
+    if lower_src_value.startswith("http") and not lower_src_value.endswith(
+        (".mp3", ".wav", ".flac", ".m4a", ".aac")
+    ):
+        ffmpeg_binary: Optional[str] = _resolve_ffmpeg_binary()
+        if not ffmpeg_binary:
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_src_unsupported",
+                message=(
+                    f"Intro fingerprint listening cannot probe non-audio source for {intro_fingerprint_key}."
+                ),
+            )
+            return False
+        try:
+            temp_audio = tempfile.NamedTemporaryFile(
+                mode="wb",
+                suffix=".wav",
+                delete=False,
+                dir=SCRIPT_DIR,
+            )
+            temp_audio_path = temp_audio.name
+            temp_audio.close()
+            ffmpeg_result = subprocess.run(
+                [
+                    ffmpeg_binary,
+                    "-y",
+                    "-i",
+                    current_src_value,
+                    "-t",
+                    "20",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "44100",
+                    temp_audio_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=25,
+            )
+            if ffmpeg_result.returncode != 0:
+                _log_intro_reason_once(
+                    intro_fingerprint_key=intro_fingerprint_key,
+                    reason_key="ffmpeg_failed",
+                    message=(
+                        f"Intro fingerprint listening ffmpeg failed for {intro_fingerprint_key} "
+                        f"(code {ffmpeg_result.returncode})."
+                    ),
+                )
+                return False
+            current_src_value = temp_audio_path
+        except Exception:
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="ffmpeg_failed",
+                message=(
+                    f"Intro fingerprint listening ffmpeg failed for {intro_fingerprint_key}."
+                ),
+            )
+            return False
+
+    cache_key: str = f"{intro_fingerprint_key}|{current_src_value}|{fingerprint_value[:120]}"
+    cached_result: Optional[bool] = INTRO_AUTO_MATCH_CACHE.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    logging.info(
+        'Start listening to episode intro fingerprint for %s.',
+        intro_fingerprint_key,
+    )
+
+    try:
+        result = subprocess.run(
+            [fpcalc_binary, '-json', current_src_value],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=12,
+        )
+        if result.returncode != 0:
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key='fpcalc_failed',
+                message=(
+                    f'Intro fingerprint listening fpcalc failed for {intro_fingerprint_key} '
+                    f'(code {result.returncode}).'
+                ),
+            )
+            logging.debug(
+                'Intro fingerprint auto-match fpcalc stderr: %s',
+                (result.stderr or '').strip()[:300],
+            )
+            INTRO_AUTO_MATCH_CACHE[cache_key] = False
+            return False
+
+        payload: Dict[str, Any] = json.loads(result.stdout or '{}')
+        episode_fingerprint_value: str = str(payload.get('fingerprint', '') or '').strip()
+        is_match: bool = _compare_fingerprint_prefix(
+            stored_fingerprint=fingerprint_value,
+            candidate_fingerprint=episode_fingerprint_value,
+        )
+        INTRO_AUTO_MATCH_CACHE[cache_key] = is_match
+        if is_match:
+            INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+            logging.info(
+                'Automatic intro fingerprint match succeeded for %s.',
+                intro_fingerprint_key,
+            )
+        return is_match
+    except Exception as e:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='probe_exception',
+            message=f'Intro fingerprint listening probe error for {intro_fingerprint_key}.',
+        )
+        logging.debug('Automatic intro fingerprint match failed: %s', e)
+        INTRO_AUTO_MATCH_CACHE[cache_key] = False
+        return False
+    finally:
+        if temp_audio_path:
+            try:
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+            except Exception:
+                pass
+
+
+def read_intro_fingerprint_match(driver: webdriver.Firefox) -> Optional[str]:
+    try:
+        driver.switch_to.default_content()
+        value = driver.execute_script(
+            """
+            let r = localStorage.getItem('bw_intro_fp_match');
+            if (r) localStorage.removeItem('bw_intro_fp_match');
+            return r;
+        """
+        )
+        return value if isinstance(value, str) else None
+    except Exception:
+        return None
+
+
+def maybe_apply_intro_skip(
+    driver: webdriver.Firefox,
+    series: str,
+    season: int,
+    intro_skip_applied: bool,
+) -> bool:
+    if intro_skip_applied:
+        return True
+
+    entry = get_intro_fingerprint_entry(series, season)
+    intro_fingerprint_key: str = build_intro_fingerprint_key(series, season)
+    if not entry:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_entry',
+            message=f'Intro listening skipped for {intro_fingerprint_key}: no fingerprint entry found.',
+        )
+        return intro_skip_applied
+
+    intro_duration_raw: int = int(entry.get("fullIntroDurationSeconds", 0) or 0)
+    intro_duration_seconds: int = max(0, intro_duration_raw)
+    if intro_duration_seconds <= 0:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='missing_intro_duration',
+            message=f'Intro listening skipped for {intro_fingerprint_key}: intro duration is 0.',
+        )
+        return intro_skip_applied
+
+    fingerprint_value: str = str(entry.get("fingerprint", "") or "").strip()
+    if not fingerprint_value:
+        _log_intro_reason_once(
+            intro_fingerprint_key=intro_fingerprint_key,
+            reason_key='duration_only_mode',
+            message=f'Intro listening for {intro_fingerprint_key}: fingerprint empty, using duration skip only.',
+        )
+        seek_to_position(driver, intro_duration_seconds)
+        return True
+
+    matched_key = read_intro_fingerprint_match(driver)
+    if matched_key == intro_fingerprint_key:
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
+            )
+            or 0
+        )
+        target_time: int = int(current_time_value + intro_duration_seconds)
+        seek_to_position(driver, target_time)
+        return True
+
+    if not INTRO_AUTO_LISTEN_LOGGED.get(intro_fingerprint_key):
+        logging.info(
+            'Start listening to episode intro for %s (introDuration=%ss, fingerprintDuration=%ss).',
+            intro_fingerprint_key,
+            intro_duration_seconds,
+            int(entry.get("fingerprintDuration", 0) or 0),
+        )
+        INTRO_AUTO_LISTEN_LOGGED[intro_fingerprint_key] = True
+
+    if try_match_current_video_fingerprint(
+        driver=driver,
+        series=series,
+        season=season,
+        fingerprint_value=fingerprint_value,
+    ):
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
+            )
+            or 0
+        )
+        target_time: int = int(current_time_value + intro_duration_seconds)
+        seek_to_position(driver, target_time)
+        return True
+
+    fingerprint_duration_raw: int = int(entry.get("fingerprintDuration", 0) or 0)
+    fingerprint_duration_seconds: int = max(0, fingerprint_duration_raw)
+    fallback_window_seconds: int = (
+        fingerprint_duration_seconds if fingerprint_duration_seconds > 0 else 12
+    )
+    fallback_trigger_seconds: int = min(
+        intro_duration_seconds,
+        max(6, fallback_window_seconds + 2),
+    )
+
+    try:
+        if not ensure_video_context(driver):
+            _log_intro_reason_once(
+                intro_fingerprint_key=intro_fingerprint_key,
+                reason_key="video_context_missing",
+                message=(
+                    f"Intro fingerprint listening waiting for video context for {intro_fingerprint_key}."
+                ),
+            )
+            return intro_skip_applied
+        current_time_value: float = float(
+            driver.execute_script(
+                "return document.querySelector('video')?.currentTime || 0;"
+            )
+            or 0
+        )
+    except Exception:
+        return intro_skip_applied
+
+    if current_time_value >= fallback_trigger_seconds:
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+        logging.info(
+            "Intro fingerprint match timeout for %s. Falling back to intro duration skip.",
+            intro_fingerprint_key,
+        )
+        seek_to_position(driver, intro_duration_seconds)
+        return True
+
+    reason_value: Optional[str] = INTRO_AUTO_REASON_LOGGED.get(intro_fingerprint_key)
+    early_fallback_reasons: Set[str] = {
+        "missing_fpcalc",
+        "video_context_missing",
+        "video_src_wait_timeout",
+        "video_src_unsupported",
+        "ffmpeg_failed",
+        "fpcalc_failed",
+        "probe_exception",
+    }
+    if reason_value in early_fallback_reasons and current_time_value >= min(
+        6,
+        intro_duration_seconds,
+    ):
+        INTRO_AUTO_REASON_LOGGED.pop(intro_fingerprint_key, None)
+        logging.info(
+            "Intro fingerprint probe unavailable for %s. Applying duration skip.",
+            intro_fingerprint_key,
+        )
+        seek_to_position(driver, intro_duration_seconds)
+        return True
+
+    logging.debug(
+        'Intro fingerprint not matched yet for %s (currentTime=%.2f, fallbackAt=%ss).',
+        intro_fingerprint_key,
+        current_time_value,
+        fallback_trigger_seconds,
+    )
+    return intro_skip_applied
 
 
 # === BROWSER HANDLING --------------------------- ===
@@ -629,7 +1117,6 @@ def get_settings(driver: webdriver.Firefox) -> Dict[str, Any]:
 
     merged = {**file_s, **ls_s}
     merged["autoFullscreen"] = bool(merged.get("autoFullscreen", True))
-    merged["autoSkipIntro"] = bool(merged.get("autoSkipIntro", True))
     merged["autoSkipEndScreen"] = bool(merged.get("autoSkipEndScreen", True))
     merged["autoNext"] = bool(merged.get("autoNext", True))
     merged["playbackRate"] = float(merged.get("playbackRate", 1))
@@ -696,7 +1183,6 @@ def sync_settings_to_localstorage(driver: webdriver.Firefox) -> None:
 def _default_settings() -> Dict[str, Any]:
     return {
         "autoFullscreen": True,
-        "autoSkipIntro": True,
         "autoSkipEndScreen": False,
         "autoNext": True,
         "playbackRate": 1.0,
@@ -1024,13 +1510,13 @@ def play_episodes_loop(
         db = load_progress()
         settings = get_settings(driver)
         auto_fs = settings["autoFullscreen"]
-        auto_skip = settings["autoSkipIntro"]
         auto_skip_end = settings["autoSkipEndScreen"]
         auto_next = settings["autoNext"]
         rate = settings["playbackRate"]
         vol = settings["volume"]
         fullscreen_attempted: bool = False
         end_skip_applied: bool = False
+        intro_skip_applied: bool = False
 
         print(
             f"\n[▶] Playing {series.capitalize()} – Season {current_season}, Episode {current_episode}"
@@ -1068,9 +1554,32 @@ def play_episodes_loop(
         apply_media_settings(driver, rate, vol)
         
         if position and position > 0:
-            skip_intro(driver, position)
-        elif auto_skip:
-            smart_skip_intro(driver, series, current_season)
+            resume_position_seconds: int = int(position)
+            if resume_position_seconds > 3:
+                logging.info(
+                    "Intro listening disabled for this episode because resume position is %ss.",
+                    resume_position_seconds,
+                )
+                seek_to_position(driver, resume_position_seconds)
+                intro_skip_applied = True
+            else:
+                logging.info(
+                    "Resume position %ss is too small, treating as fresh start for intro listening.",
+                    resume_position_seconds,
+                )
+                intro_skip_applied = maybe_apply_intro_skip(
+                    driver=driver,
+                    series=series,
+                    season=current_season,
+                    intro_skip_applied=intro_skip_applied,
+                )
+        else:
+            intro_skip_applied = maybe_apply_intro_skip(
+                driver=driver,
+                series=series,
+                season=current_season,
+                intro_skip_applied=intro_skip_applied,
+            )
         position = 0
 
         recovery_tries = 0
@@ -1104,29 +1613,6 @@ def play_episodes_loop(
             )
             ensure_video_context(driver)
             play_video(driver)
-
-        try:
-            const_ser = series
-            const_secs = get_intro_skip_seconds(const_ser)
-            const_secs_end = get_intro_skip_end_seconds(const_ser)
-            driver.execute_script(
-                """
-                const v = document.querySelector('video');
-                const secs = arguments[0];
-                const secsEnd = arguments[1];
-                if (!v || !isFinite(v.duration)) return;
-                if (secsEnd <= secs || secsEnd >= (v.duration - 1)) return;
-                const currentTime = v.currentTime;
-                if (currentTime >= secs && currentTime <= secsEnd) {
-                    v.currentTime = secsEnd;
-                    try { v.play().catch(()=>{}); } catch(_) {}
-                }
-            """,
-                const_secs,
-                const_secs_end,
-            )
-        except Exception:
-            pass
 
         if auto_fs and not HEADLESS:
             _hide_sidebar(driver, True)
@@ -1290,7 +1776,6 @@ def play_episodes_loop(
 
                     # Lokale Variablen MERGEN
                     auto_fs = bool(upd.get("autoFullscreen", auto_fs))
-                    auto_skip = bool(upd.get("autoSkipIntro", auto_skip))
                     auto_skip_end = bool(upd.get("autoSkipEndScreen", auto_skip_end))
                     auto_next = bool(upd.get("autoNext", auto_next))
                     rate = float(upd.get("playbackRate", rate))
@@ -1300,7 +1785,6 @@ def play_episodes_loop(
                     settings.update(
                         {
                             "autoFullscreen": auto_fs,
-                            "autoSkipIntro": auto_skip,
                             "autoSkipEndScreen": auto_skip_end,
                             "autoNext": auto_next,
                             "playbackRate": rate,
@@ -1360,39 +1844,85 @@ def play_episodes_loop(
             # --- LIVE SERIES SKIP UPDATES ----------------------------------
             try:
                 skip_settings_changed = False
-                upd = read_localstorage_value(driver, "bw_intro_start_update")
+                upd = read_localstorage_value(driver, "bw_intro_duration_update")
                 if upd:
                     data = json.loads(upd)
                     ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
                     secs_raw = data.get("seconds", 0)
                     ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
                     try:
                         secs = max(0, int(float(secs_raw)))
                     except Exception:
                         secs = 0
 
-                    if ser:
-                        current_end = get_intro_skip_end_seconds(ser)
-                        if set_intro_skip_seconds(ser, secs, current_end):
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=secs,
+                            fingerprint=None,
+                            fingerprint_duration=None,
+                        ):
                             skip_settings_changed = True
             except Exception:
                 pass
 
             try:
-                upd = read_localstorage_value(driver, "bw_intro_end_update")
+                upd = read_localstorage_value(driver, "bw_intro_fp_update")
                 if upd:
                     data = json.loads(upd)
                     ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
+                    fingerprint_raw = data.get("fingerprint", "")
+                    ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
+                    fingerprint_value = str(fingerprint_raw or "").strip()
+
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=None,
+                            fingerprint=fingerprint_value,
+                            fingerprint_duration=None,
+                        ):
+                            skip_settings_changed = True
+            except Exception:
+                pass
+
+            try:
+                upd = read_localstorage_value(driver, "bw_intro_fp_duration_update")
+                if upd:
+                    data = json.loads(upd)
+                    ser_raw = data.get("series", "")
+                    season_raw = data.get("season", 0)
                     secs_raw = data.get("seconds", 0)
                     ser = norm_series_key(ser_raw)
+                    try:
+                        season_value = max(0, int(float(season_raw)))
+                    except Exception:
+                        season_value = 0
                     try:
                         secs = max(0, int(float(secs_raw)))
                     except Exception:
                         secs = 0
 
-                    if ser:
-                        current_start = get_intro_skip_seconds(ser)
-                        if set_intro_skip_seconds(ser, current_start, secs):
+                    if ser and season_value > 0:
+                        if merge_intro_fingerprint_entry(
+                            series=ser,
+                            season=season_value,
+                            full_intro_duration_seconds=None,
+                            fingerprint=None,
+                            fingerprint_duration=secs,
+                        ):
                             skip_settings_changed = True
             except Exception:
                 pass
@@ -1532,10 +2062,17 @@ def play_episodes_loop(
                 except Exception:
                     pass
 
+            intro_skip_applied = maybe_apply_intro_skip(
+                driver=driver,
+                series=series,
+                season=current_season,
+                intro_skip_applied=intro_skip_applied,
+            )
+
             time.sleep(1.0)
 
         if auto_nav:
-            position = get_intro_skip_seconds(series) if auto_skip else 0
+            position = 0
             continue
 
         exit_fullscreen(driver)
@@ -1561,7 +2098,7 @@ def play_episodes_loop(
             if not next_episode:
                 return
             current_season, current_episode = next_episode
-            position = get_intro_skip_seconds(series) if auto_skip else 0
+            position = 0
             continue
 
         # Spezielle Behandlung für One Piece: Verhindere Sprung zu Staffel 11
@@ -1622,7 +2159,7 @@ def play_episodes_loop(
             # Normale Episode-Inkrementierung für andere Serien
             current_episode += 1
             
-        position = get_intro_skip_seconds(series) if auto_skip else 0
+        position = 0
         continue
 
 
@@ -2288,13 +2825,16 @@ def apply_media_settings(driver, rate, vol):
         pass
 
 
-def skip_intro(driver, seconds):
+def seek_to_position(driver, seconds: int) -> None:
     WebDriverWait(driver, 15).until(
         lambda d: d.execute_script(
             "return document.querySelector('video')?.readyState > 0;"
         )
     )
-    driver.execute_script(f"document.querySelector('video').currentTime = {seconds};")
+    driver.execute_script(
+        "document.querySelector('video').currentTime = arguments[0];",
+        int(seconds),
+    )
 
 
 def get_current_position(driver):
@@ -2382,9 +2922,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
     """Erstellt HTML für die Sidebar mit Streaming-Anbieter-Tabs."""
     if settings is None:
         settings = {}
-    auto_skip_intro = settings.get("autoSkipIntro", True)
-    auto_skip_end = settings.get("autoSkipEndScreen", False)
-    
+    intro_upload_files: List[str] = list_intro_upload_files()
+    fpcalc_available: bool = _resolve_fpcalc_binary() is not None
+    intro_fingerprints: Dict[str, Dict[str, Any]] = load_intro_fingerprints()
     # Gruppiere Serien nach Anbietern
     provider_series = {}
     for series_name, data in db.items():
@@ -2423,14 +2963,17 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
             episode = int(data.get("episode", 1))
             position = int(data.get("position", 0))
             ts_val = float(data.get("timestamp", 0))
-            intro_val = int(data.get("intro_skip_start", INTRO_SKIP_SECONDS))
-            intro_end_val = int(data.get("intro_skip_end", INTRO_SKIP_SECONDS + 60))
             end_skip_val = int(data.get("end_skip", 0))
+            intro_fingerprint_key: str = build_intro_fingerprint_key(series_name, season)
+            intro_entry: Dict[str, Any] = intro_fingerprints.get(intro_fingerprint_key, {})
+            intro_duration_val = int(intro_entry.get("fullIntroDurationSeconds", 0) or 0)
+            intro_fp_val = _html.escape(str(intro_entry.get("fingerprint", "") or ""), quote=True)
+            intro_fp_duration_val = int(intro_entry.get("fingerprintDuration", 0) or 0)
             safe_name = _html.escape(series_name, quote=True)
 
             series_items.append(f"""
                 <div class="bw-series-item" data-series="{safe_name}" data-season="{season}" data-episode="{episode}" data-ts="{ts_val}" data-provider="{provider_id}"
-                     data-intro-start="{intro_val}" data-intro-end="{intro_end_val}" data-end-skip="{end_skip_val}"
+                     data-end-skip="{end_skip_val}" data-intro-duration="{intro_duration_val}" data-intro-fingerprint="{intro_fp_val}" data-intro-fp-duration="{intro_fp_duration_val}"
                      style="margin:8px;padding:16px;background:linear-gradient(135deg,rgba(255,255,255,.05),rgba(255,255,255,.02));
                             border:1px solid rgba(255,255,255,.1);border-radius:12px;cursor:pointer;position:relative;">
                     
@@ -2446,9 +2989,9 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
                         <div class="bw-delete" data-series="{safe_name}" style="color:#ef4444;cursor:pointer;padding:8px;border-radius:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);font-size:12px;margin-left:8px;transition:all .2s ease;hover:background:rgba(239,68,68,.2);" title="Remove series">X</div>
                     </div>
                     <div style="display:flex;justify-content:flex-end;margin-top:12px;">
-                        <button class="bw-series-settings" data-series="{safe_name}" data-intro-start="{intro_val}" data-intro-end="{intro_end_val}" data-end-skip="{end_skip_val}"
+                        <button class="bw-series-settings" data-series="{safe_name}" data-season="{season}" data-end-skip="{end_skip_val}" data-intro-duration="{intro_duration_val}" data-intro-fingerprint="{intro_fp_val}" data-intro-fp-duration="{intro_fp_duration_val}"
                                 style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;font-size:11px;cursor:pointer;transition:all .2s ease;">
-                            Skip Times
+                            Skip Settings
                         </button>
                     </div>
                 </div>
@@ -2461,7 +3004,10 @@ def build_items_html(db: Dict[str, Dict[str, Any]], settings: Optional[Dict[str,
         ''')
     
     # Kombiniere alles
+    upload_meta = _html.escape(json.dumps(intro_upload_files), quote=True)
+    fpcalc_meta = "1" if fpcalc_available else "0"
     tabs_container = f'''
+        <div id="bwUploadFiles" data-files="{upload_meta}" data-fpcalc="{fpcalc_meta}" style="display:none;"></div>
         <div class="bw-provider-tabs" style="display:flex;gap:2px;margin-bottom:12px;">
             {"".join(tabs_html)}
         </div>
@@ -2692,38 +3238,30 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 box-shadow: 0 4px 12px rgba(59,130,246,.15);
               }
               
-              #bingeSidebar .bw-intro-start,
-              #bingeSidebar .bw-intro-end,
+              #bingeSidebar .bw-intro-duration,
+              #bingeSidebar .bw-intro-fingerprint,
+              #bingeSidebar .bw-intro-fp-duration,
               #bingeSidebar .bw-end {
                 transition: all .2s ease !important;
               }
-              
-              #bingeSidebar .bw-intro-start:focus,
-              #bingeSidebar .bw-intro-end:focus,
-              #bingeSidebar .bw-end:focus {
+
+              #bingeSidebar .bw-intro-duration:focus,
+              #bingeSidebar .bw-intro-fingerprint:focus,
+              #bingeSidebar .bw-intro-fp-duration:focus {
                 transform: scale(1.02);
                 box-shadow: 0 0 0 2px rgba(59,130,246,.3);
                 border-color: rgba(59,130,246,.6) !important;
               }
               
-              #bingeSidebar .bw-intro-start:hover,
-              #bingeSidebar .bw-intro-end:hover,
-              #bingeSidebar .bw-end:hover {
+              #bingeSidebar .bw-intro-duration:hover,
+              #bingeSidebar .bw-intro-fingerprint:hover,
+              #bingeSidebar .bw-intro-fp-duration:hover {
                 border-color: rgba(59,130,246,.5) !important;
                 background: rgba(59,130,246,.15) !important;
               }
-              
-              #bingeSidebar .bw-intro-end:focus {
-                box-shadow: 0 0 0 2px rgba(139,92,246,.3);
-                border-color: rgba(139,92,246,.6) !important;
-              }
-              
-              #bingeSidebar .bw-intro-end:hover {
-                border-color: rgba(139,92,246,.5) !important;
-                background: rgba(139,92,246,.15) !important;
-              }
-              
+
               #bingeSidebar .bw-end:focus {
+                transform: scale(1.02);
                 box-shadow: 0 0 0 2px rgba(239,68,68,.3);
                 border-color: rgba(239,68,68,.6) !important;
               }
@@ -2738,7 +3276,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               #bingeSidebar .bw-end-section {
                 transition: all .2s ease;
               }
-              
+
               #bingeSidebar .bw-intro-section:hover,
               #bingeSidebar .bw-end-section:hover {
                 transform: translateX(2px);
@@ -2964,7 +3502,7 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
               d.addEventListener('input', (e)=>{ if (e.target && e.target.id==='bwSearch') onFilter(); });
               d.addEventListener('change', (e)=>{ if (e.target && e.target.id==='bwSort') onSort(); });
 
-              const openSeriesSkipPanel = (seriesName, introStart, introEnd, endSkip) => {
+              const openSeriesSkipPanel = (seriesName, seasonValue, introDuration, introFingerprint, introFingerprintDuration, endSkip) => {
                 const existingPanel = document.getElementById('bwSeriesSkipPanel');
                 if (existingPanel) {
                   existingPanel.remove();
@@ -2974,7 +3512,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 try {
                   settingsData = JSON.parse(localStorage.getItem('bw_settings') || '{}');
                 } catch(_) {}
-                const allowIntro = settingsData.autoSkipIntro !== false;
                 const allowEnd = settingsData.autoSkipEndScreen === true;
 
                 const panel = document.createElement('div');
@@ -2993,28 +3530,51 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                   boxShadow: '0 10px 30px rgba(0,0,0,.4)',
                 });
 
-                const introSectionHtml = allowIntro ? `
-                  <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:6px;">
+                const introSectionHtml = `
+                  <div class="bw-intro-section" style="display:flex;flex-direction:column;gap:8px;">
                     <div style="display:flex;align-items:center;gap:6px;">
                       <div style="width:12px;height:12px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:8px;color:white;">&gt;</div>
-                      <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip</span>
+                      <span style="font-size:11px;color:#cbd5e1;font-weight:500;">Intro Skip (Season ${seasonValue})</span>
                     </div>
                     <div style="display:flex;gap:6px;align-items:center;">
                       <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
-                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Start (s)</label>
-                        <input class="bw-intro-start" data-series="${seriesName}" type="number" min="0" value="${introStart}"
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Intro Duration (s)</label>
+                        <input class="bw-intro-duration" data-series="${seriesName}" data-season="${seasonValue}" type="number" min="0" value="${introDuration}"
                                style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.3);background:rgba(59,130,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
-                               placeholder="0" title="Intro start time (seconds)"/>
+                               placeholder="0" title="Intro duration in seconds"/>
                       </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
                       <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
-                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">End (s)</label>
-                        <input class="bw-intro-end" data-series="${seriesName}" type="number" min="0" value="${introEnd}"
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Fingerprint</label>
+                        <input class="bw-intro-fingerprint" data-series="${seriesName}" data-season="${seasonValue}" type="text" value="${introFingerprint || ''}"
+                               style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;transition:all .2s ease;outline:none;"
+                               placeholder="Optional fingerprint string" title="Fingerprint string"/>
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:2px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Fingerprint Duration (s)</label>
+                        <input class="bw-intro-fp-duration" data-series="${seriesName}" data-season="${seasonValue}" type="number" min="0" value="${introFingerprintDuration}"
                                style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(139,92,246,.3);background:rgba(139,92,246,.1);color:#e2e8f0;font-size:12px;font-weight:500;text-align:center;transition:all .2s ease;outline:none;"
-                               placeholder="0" title="Intro end time (seconds)"/>
+                               placeholder="0" title="Fingerprint duration in seconds"/>
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <div style="display:flex;flex-direction:column;gap:6px;flex:1;">
+                        <label style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">Select MP3 (intro_uploads)</label>
+                        <select class="bw-intro-file-select" data-series="${seriesName}" data-season="${seasonValue}"
+                                style="width:100%;padding:8px;border-radius:8px;border:1px dashed rgba(59,130,246,.35);background:rgba(59,130,246,.08);color:#e2e8f0;font-size:11px;transition:all .2s ease;outline:none;">
+                        </select>
+                        <button class="bw-intro-file-apply" data-series="${seriesName}" data-season="${seasonValue}"
+                                style="padding:6px 10px;border-radius:8px;border:1px solid rgba(59,130,246,.35);background:rgba(59,130,246,.12);color:#93c5fd;font-size:11px;cursor:pointer;">
+                          Generate Fingerprint
+                        </button>
+                        <div class="bw-intro-upload-status" data-series="${seriesName}" data-season="${seasonValue}" style="font-size:10px;color:#94a3b8;">Drop MP3 files into intro_uploads/.</div>
                       </div>
                     </div>
                   </div>
-                ` : '';
+                `;
 
                 const endSectionHtml = allowEnd ? `
                   <div class="bw-end-section" style="display:flex;flex-direction:column;gap:6px;">
@@ -3086,25 +3646,39 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
 
                 if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
                 panel.addEventListener('input', (ev) => {
-                  const introInput = ev.target.closest && ev.target.closest('input.bw-intro-start');
-                  if (introInput) {
-                    const series = introInput.dataset.series; if (!series) return;
-                    const key = '__deb_intro_start_' + series;
+                  const introDurationInput = ev.target.closest && ev.target.closest('input.bw-intro-duration');
+                  if (introDurationInput) {
+                    const series = introDurationInput.dataset.series; if (!series) return;
+                    const season = parseInt(introDurationInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_duration_' + series + '_' + season;
                     if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
                     window.__bwDebouncers[key] = setTimeout(() => {
-                      const seconds = parseInt(introInput.value || '0', 10) || 0;
-                      localStorage.setItem('bw_intro_start_update', JSON.stringify({ series, seconds }));
+                      const seconds = parseInt(introDurationInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_duration_update', JSON.stringify({ series, season, seconds }));
                     }, 600);
                   }
 
-                  const introEndInput = ev.target.closest && ev.target.closest('input.bw-intro-end');
-                  if (introEndInput) {
-                    const series = introEndInput.dataset.series; if (!series) return;
-                    const key = '__deb_intro_end_' + series;
+                  const introFingerprintInput = ev.target.closest && ev.target.closest('input.bw-intro-fingerprint');
+                  if (introFingerprintInput) {
+                    const series = introFingerprintInput.dataset.series; if (!series) return;
+                    const season = parseInt(introFingerprintInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_fp_' + series + '_' + season;
                     if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
                     window.__bwDebouncers[key] = setTimeout(() => {
-                      const seconds = parseInt(introEndInput.value || '0', 10) || 0;
-                      localStorage.setItem('bw_intro_end_update', JSON.stringify({ series, seconds }));
+                      const fingerprint = String(introFingerprintInput.value || '').trim();
+                      localStorage.setItem('bw_intro_fp_update', JSON.stringify({ series, season, fingerprint }));
+                    }, 600);
+                  }
+
+                  const introFingerprintDurationInput = ev.target.closest && ev.target.closest('input.bw-intro-fp-duration');
+                  if (introFingerprintDurationInput) {
+                    const series = introFingerprintDurationInput.dataset.series; if (!series) return;
+                    const season = parseInt(introFingerprintDurationInput.dataset.season || '0', 10) || 0;
+                    const key = '__deb_intro_fp_duration_' + series + '_' + season;
+                    if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
+                    window.__bwDebouncers[key] = setTimeout(() => {
+                      const seconds = parseInt(introFingerprintDurationInput.value || '0', 10) || 0;
+                      localStorage.setItem('bw_intro_fp_duration_update', JSON.stringify({ series, season, seconds }));
                     }, 600);
                   }
 
@@ -3119,6 +3693,114 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     }, 600);
                   }
                 });
+
+                const fillUploadFiles = () => {
+                  const selectEl = panel.querySelector('select.bw-intro-file-select');
+                  if (!selectEl) return;
+                  const filesNode = document.getElementById('bwUploadFiles');
+                  if (!filesNode) return;
+                  const fpcalcAvailable = filesNode.getAttribute('data-fpcalc') === '1';
+                  let files = [];
+                  try {
+                    const raw = filesNode.getAttribute('data-files') || '[]';
+                    files = JSON.parse(raw);
+                  } catch(_) {}
+                  selectEl.innerHTML = '';
+                  const placeholder = document.createElement('option');
+                  placeholder.value = '';
+                  if (!fpcalcAvailable) {
+                    placeholder.textContent = 'Chromaprint not installed';
+                  } else {
+                    placeholder.textContent = files.length ? 'Select MP3 file' : 'No MP3 files found';
+                  }
+                  selectEl.appendChild(placeholder);
+                  if (fpcalcAvailable) {
+                    files.forEach(file => {
+                      const opt = document.createElement('option');
+                      opt.value = String(file);
+                      opt.textContent = String(file);
+                      selectEl.appendChild(opt);
+                    });
+                  }
+                  selectEl.disabled = !fpcalcAvailable;
+                  const statusEl = panel.querySelector('.bw-intro-upload-status');
+                  if (statusEl && !fpcalcAvailable) {
+                    statusEl.textContent = 'Chromaprint (fpcalc) is not installed.';
+                  }
+                };
+
+                fillUploadFiles();
+
+                const uploadButton = panel.querySelector('button.bw-intro-file-apply');
+                if (uploadButton) {
+                  uploadButton.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    const filesNode = document.getElementById('bwUploadFiles');
+                    const fpcalcAvailable = filesNode && filesNode.getAttribute('data-fpcalc') === '1';
+                    const series = uploadButton.dataset.series; if (!series) return;
+                    const season = parseInt(uploadButton.dataset.season || '0', 10) || 0;
+                    const selectEl = panel.querySelector('select.bw-intro-file-select');
+                    const statusEl = panel.querySelector('.bw-intro-upload-status');
+                    if (!fpcalcAvailable) {
+                      if (statusEl) statusEl.textContent = 'Install Chromaprint (fpcalc) first.';
+                      return;
+                    }
+                    if (!selectEl) return;
+                    const filename = String(selectEl.value || '');
+                    if (!filename) {
+                      if (statusEl) statusEl.textContent = 'Select an MP3 first.';
+                      return;
+                    }
+                    localStorage.setItem('bw_intro_upload', JSON.stringify({
+                      series,
+                      season,
+                      filename
+                    }));
+                    if (statusEl) statusEl.textContent = 'Processing MP3...';
+                  });
+                }
+
+                const uploadPollInterval = setInterval(() => {
+                  const statusEl = panel.querySelector('.bw-intro-upload-status');
+                  if (!statusEl) return;
+                  const series = statusEl.getAttribute('data-series');
+                  const season = parseInt(statusEl.getAttribute('data-season') || '0', 10) || 0;
+                  if (!series || season <= 0) return;
+
+                  let resultRaw = null;
+                  let errorRaw = null;
+                  try { resultRaw = localStorage.getItem('bw_intro_upload_result'); } catch(_) {}
+                  try { errorRaw = localStorage.getItem('bw_intro_upload_error'); } catch(_) {}
+
+                  if (resultRaw) {
+                    try {
+                      const result = JSON.parse(resultRaw);
+                      if (result && result.series === series && result.season === season) {
+                        localStorage.removeItem('bw_intro_upload_result');
+                        const fpInput = panel.querySelector('input.bw-intro-fingerprint');
+                        const fpDurationInput = panel.querySelector('input.bw-intro-fp-duration');
+                        if (fpInput) fpInput.value = String(result.fingerprint || '');
+                        if (fpDurationInput) fpDurationInput.value = String(result.fingerprintDuration || 0);
+                        fillUploadFiles();
+                        statusEl.textContent = 'Fingerprint saved. MP3 removed.';
+                      }
+                    } catch(_) {}
+                  }
+
+                  if (errorRaw) {
+                    try {
+                      const result = JSON.parse(errorRaw);
+                      if (result && result.series === series && result.season === season) {
+                        localStorage.removeItem('bw_intro_upload_error');
+                        fillUploadFiles();
+                        statusEl.textContent = 'Upload failed. Please try again.';
+                      }
+                    } catch(_) {}
+                  }
+                }, 900);
+
+                const stopUploadPoll = () => clearInterval(uploadPollInterval);
+                if (closeButton) closeButton.addEventListener('click', stopUploadPoll);
               };
 
               d.addEventListener('click', (e)=>{
@@ -3138,9 +3820,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                       <input type="checkbox" id="bwOptAutoFullscreen"/><span>Auto-Fullscreen</span>
                     </label>
-                                         <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
-                       <input type="checkbox" id="bwOptAutoSkipIntro"/><span>Skip intro</span>
-                     </label>
                      <label style="display:flex;align-items:center;gap:8px;margin:8px 0;">
                        <input type="checkbox" id="bwOptAutoSkipEndScreen"/><span>Skip end screen</span>
                      </label>
@@ -3271,7 +3950,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                       e.stopPropagation();
                       const next = {
                         autoFullscreen: !!document.getElementById('bwOptAutoFullscreen')?.checked,
-                        autoSkipIntro: !!document.getElementById('bwOptAutoSkipIntro')?.checked,
                         autoSkipEndScreen: !!document.getElementById('bwOptAutoSkipEndScreen')?.checked,
                         autoNext: !!document.getElementById('bwOptAutoNext')?.checked,
                         playbackRate: parseFloat(document.getElementById('bwOptPlaybackRate')?.value || '1'),
@@ -3292,7 +3970,6 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                     const s = JSON.parse(localStorage.getItem('bw_settings')||'{}');
                     const x = id => document.getElementById(id);
                                          if (x('bwOptAutoFullscreen')) x('bwOptAutoFullscreen').checked = (s.autoFullscreen !== false);
-                     if (x('bwOptAutoSkipIntro')) x('bwOptAutoSkipIntro').checked = (s.autoSkipIntro !== false);
                      if (x('bwOptAutoSkipEndScreen')) x('bwOptAutoSkipEndScreen').checked = (s.autoSkipEndScreen !== false);
                      if (x('bwOptAutoNext')) x('bwOptAutoNext').checked = (s.autoNext !== false);
                     if (x('bwOptPlaybackRate')) x('bwOptPlaybackRate').value = String(s.playbackRate ?? 1);
@@ -3327,11 +4004,20 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 const skipPanelButton = c('.bw-series-settings');
                 if (skipPanelButton) {
                   const seriesName = skipPanelButton.getAttribute('data-series');
-                  const introStart = parseInt(skipPanelButton.getAttribute('data-intro-start') || '0', 10) || 0;
-                  const introEnd = parseInt(skipPanelButton.getAttribute('data-intro-end') || '0', 10) || 0;
+                  const seasonValue = parseInt(skipPanelButton.getAttribute('data-season') || '0', 10) || 0;
+                  const introDuration = parseInt(skipPanelButton.getAttribute('data-intro-duration') || '0', 10) || 0;
+                  const introFingerprint = skipPanelButton.getAttribute('data-intro-fingerprint') || '';
+                  const introFingerprintDuration = parseInt(skipPanelButton.getAttribute('data-intro-fp-duration') || '0', 10) || 0;
                   const endSkip = parseInt(skipPanelButton.getAttribute('data-end-skip') || '0', 10) || 0;
                   if (seriesName) {
-                    openSeriesSkipPanel(seriesName, introStart, introEnd, endSkip);
+                    openSeriesSkipPanel(
+                      seriesName,
+                      seasonValue,
+                      introDuration,
+                      introFingerprint,
+                      introFingerprintDuration,
+                      endSkip
+                    );
                   }
                   return;
                 }
@@ -3339,11 +4025,17 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                                  const item = c('.bw-series-item');
                  if (item) {
                      // Check if click originated from input field or delete button - don't trigger navigation
-                     const clickedInput = e.target.closest && (e.target.closest('input.bw-intro-start') || e.target.closest('input.bw-intro-end'));
                      const clickedEndInput = e.target.closest && e.target.closest('input.bw-end');
+                     const clickedIntroInput = e.target.closest && (
+                       e.target.closest('input.bw-intro-duration') ||
+                       e.target.closest('input.bw-intro-fingerprint') ||
+                       e.target.closest('input.bw-intro-fp-duration') ||
+                       e.target.closest('select.bw-intro-file-select') ||
+                       e.target.closest('button.bw-intro-file-apply')
+                     );
                      const clickedDelete = e.target.closest && e.target.closest('.bw-delete');
                      const clickedSkipSettings = e.target.closest && e.target.closest('.bw-series-settings');
-                     if (clickedInput || clickedEndInput || clickedDelete || clickedSkipSettings) return;
+                     if (clickedEndInput || clickedIntroInput || clickedDelete || clickedSkipSettings) return;
                     
                     if (localStorage.getItem('bw_nav_inflight') === '1') return; // throttle
                     localStorage.setItem('bw_nav_inflight','1');
@@ -3370,31 +4062,9 @@ def inject_sidebar(driver: webdriver.Firefox, db: Dict[str, Dict[str, Any]]) -> 
                 }
               });
 
-                             // Debounce für Intro-Input und End-Input
+                             // Debounce für End-Input
                if (!window.__bwDebouncers) window.__bwDebouncers = Object.create(null);
                d.addEventListener('input', (e)=>{
-                 const inp = e.target.closest && e.target.closest('input.bw-intro-start');
-                 if (inp) {
-                   const series = inp.dataset.series; if (!series) return;
-                   const key = '__deb_intro_start_' + series;
-                   if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
-                   window.__bwDebouncers[key] = setTimeout(()=>{
-                     const seconds = parseInt(inp.value||'0',10)||0;
-                     localStorage.setItem('bw_intro_start_update', JSON.stringify({series, seconds}));
-                   }, 600);
-                 }
-                 
-                 const inpEnd = e.target.closest && e.target.closest('input.bw-intro-end');
-                 if (inpEnd) {
-                   const series = inpEnd.dataset.series; if (!series) return;
-                   const key = '__deb_intro_end_' + series;
-                   if (window.__bwDebouncers[key]) clearTimeout(window.__bwDebouncers[key]);
-                   window.__bwDebouncers[key] = setTimeout(()=>{
-                     const seconds = parseInt(inpEnd.value||'0',10)||0;
-                     localStorage.setItem('bw_intro_end_update', JSON.stringify({series, seconds}));
-                   }, 600);
-                 }
-                 
                  const endInp = e.target.closest && e.target.closest('input.bw-end');
                  if (endInp) {
                    const series = endInp.dataset.series; if (!series) return;
@@ -3595,61 +4265,185 @@ def main() -> None:
                 except Exception:
                     pass
 
-                # Handle intro start updates (from sidebar input) – normalisieren + live anwenden
-                try:
-                    upd = read_localstorage_value(driver, "bw_intro_start_update")
-                    if upd:
-                        data = json.loads(upd)
-                        ser_raw = data.get("series", "")
-                        secs_raw = data.get("seconds", 0)
-                        ser = norm_series_key(ser_raw)
-                        try:
-                            secs = max(0, int(float(secs_raw)))
-                        except Exception:
-                            secs = 0
-
-                        if ser:
-                            # Get current end time to preserve it
-                            current_end = get_intro_skip_end_seconds(ser)
-                            set_intro_skip_seconds(ser, secs, current_end)
-
-                            # UI sofort aktualisieren
-                            html = build_items_html(load_progress(), get_settings(driver))
-                            driver.execute_script(
-                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
-                                html,
-                            )
-                except Exception:
-                    pass
-
-                # Handle intro end updates (from sidebar input) – normalisieren + live anwenden
-                try:
-                    upd = read_localstorage_value(driver, "bw_intro_end_update")
-                    if upd:
-                        data = json.loads(upd)
-                        ser_raw = data.get("series", "")
-                        secs_raw = data.get("seconds", 0)
-                        ser = norm_series_key(ser_raw)
-                        try:
-                            secs = max(0, int(float(secs_raw)))
-                        except Exception:
-                            secs = 0
-
-                        if ser:
-                            # Get current start time to preserve it
-                            current_start = get_intro_skip_seconds(ser)
-                            set_intro_skip_seconds(ser, current_start, secs)
-
-                            # UI sofort aktualisieren
-                            html = build_items_html(load_progress(), get_settings(driver))
-                            driver.execute_script(
-                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
-                                html,
-                            )
-                except Exception:
-                    pass
-
                 # Handle end screen updates (from sidebar input) – normalisieren + live anwenden
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_upload")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        filename_raw = data.get("filename", "")
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        filename_value: str = str(filename_raw or "").strip()
+                        file_path: Optional[str] = resolve_intro_upload_path(
+                            filename_value
+                        )
+
+                        if ser and season_value > 0 and file_path:
+                            fingerprint_entry = None
+                            try:
+                                with open(file_path, "rb") as f:
+                                    mp3_bytes = f.read()
+                                fingerprint_entry = extract_fingerprint_from_mp3(
+                                    mp3_bytes
+                                )
+                            except Exception:
+                                fingerprint_entry = None
+
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
+
+                            if fingerprint_entry:
+                                merge_intro_fingerprint_entry(
+                                    series=ser,
+                                    season=season_value,
+                                    full_intro_duration_seconds=None,
+                                    fingerprint=fingerprint_entry.get("fingerprint"),
+                                    fingerprint_duration=fingerprint_entry.get(
+                                        "fingerprintDuration"
+                                    ),
+                                )
+                                driver.execute_script(
+                                    "localStorage.setItem('bw_intro_upload_result', arguments[0]);",
+                                    json.dumps(
+                                        {
+                                            "series": ser,
+                                            "season": season_value,
+                                            "fingerprint": fingerprint_entry.get(
+                                                "fingerprint"
+                                            ),
+                                            "fingerprintDuration": fingerprint_entry.get(
+                                                "fingerprintDuration"
+                                            ),
+                                            "filename": filename_value,
+                                        }
+                                    ),
+                                )
+                            else:
+                                driver.execute_script(
+                                    "localStorage.setItem('bw_intro_upload_error', arguments[0]);",
+                                    json.dumps(
+                                        {
+                                            "series": ser,
+                                            "season": season_value,
+                                            "filename": filename_value,
+                                        }
+                                    ),
+                                )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_duration_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=secs,
+                                fingerprint=None,
+                                fingerprint_duration=None,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_fp_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        fingerprint_raw = data.get("fingerprint", "")
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        fingerprint_value = str(fingerprint_raw or "").strip()
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=None,
+                                fingerprint=fingerprint_value,
+                                fingerprint_duration=None,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
+                try:
+                    upd = read_localstorage_value(driver, "bw_intro_fp_duration_update")
+                    if upd:
+                        data = json.loads(upd)
+                        ser_raw = data.get("series", "")
+                        season_raw = data.get("season", 0)
+                        secs_raw = data.get("seconds", 0)
+                        ser = norm_series_key(ser_raw)
+                        try:
+                            season_value = max(0, int(float(season_raw)))
+                        except Exception:
+                            season_value = 0
+                        try:
+                            secs = max(0, int(float(secs_raw)))
+                        except Exception:
+                            secs = 0
+
+                        if ser and season_value > 0:
+                            merge_intro_fingerprint_entry(
+                                series=ser,
+                                season=season_value,
+                                full_intro_duration_seconds=None,
+                                fingerprint=None,
+                                fingerprint_duration=secs,
+                            )
+
+                            html = build_items_html(load_progress(), get_settings(driver))
+                            driver.execute_script(
+                                "if (window.__bwSetList){window.__bwSetList(arguments[0]);}",
+                                html,
+                            )
+                except Exception:
+                    pass
+
                 try:
                     upd = read_localstorage_value(driver, "bw_end_update")
                     if upd:
